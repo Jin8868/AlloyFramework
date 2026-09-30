@@ -1,6 +1,6 @@
 {
   "name": "Alloy.Editor",
-  "rootNamespace": "Alloy.Editor",
+  "rootNamespace": "AlloyFramework.Editor",
   "references": [
     "Alloy.Runtime"
   ],

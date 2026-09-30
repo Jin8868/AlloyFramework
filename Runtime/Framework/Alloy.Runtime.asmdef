@@ -1,8 +1,9 @@
 {
   "name": "Alloy.Runtime",
-  "rootNamespace": "Alloy",
+  "rootNamespace": "AlloyFramework",
   "references": [
-    "Alloy.Core"
+    "Alloy.Core",
+    "UniTask"
   ],
   "includePlatforms": [],
   "excludePlatforms": [],

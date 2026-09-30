@@ -1,0 +1,3 @@
+<linker>
+  <assembly fullname="Alloy.Runtime" preserve="all" />
+</linker>

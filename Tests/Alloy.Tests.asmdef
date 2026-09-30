@@ -1,6 +1,6 @@
 {
   "name": "Alloy.Tests",
-  "rootNamespace": "Alloy.Tests",
+  "rootNamespace": "AlloyFramework.Tests",
   "references": [
     "Alloy.Core"
   ],

@@ -1,6 +1,6 @@
 {
   "name": "Alloy.Core",
-  "rootNamespace": "Alloy.Core",
+  "rootNamespace": "AlloyFramework.Core",
   "references": [],
   "includePlatforms": [],
   "excludePlatforms": [],
