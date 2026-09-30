@@ -3,7 +3,8 @@
   "rootNamespace": "AlloyFramework",
   "references": [
     "Alloy.Core",
-    "UniTask"
+    "UniTask",
+    "YooAsset"
   ],
   "includePlatforms": [],
   "excludePlatforms": [],
