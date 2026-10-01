@@ -1,0 +1,20 @@
+{
+  "name": "Alloy.YooAsset.Editor",
+  "rootNamespace": "AlloyFramework.Editor",
+  "references": [
+    "Alloy.Runtime",
+    "YooAsset",
+    "YooAsset.Editor"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}
