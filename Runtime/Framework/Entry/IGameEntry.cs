@@ -7,6 +7,6 @@ namespace AlloyFramework
     {
         UniTask MainAsync(CancellationToken cancellationToken);
 
-        void Shutdown();
+        UniTask ShutdownAsync();
     }
 }

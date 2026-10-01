@@ -101,7 +101,7 @@ namespace AlloyFramework
             RunStartupAsync(_startupCancellation.Token).Forget(HandleStartupException);
         }
 
-        public static void Shutdown()
+        public static async UniTask ShutdownAsync()
         {
             if (_isShuttingDown)
             {
@@ -115,7 +115,7 @@ namespace AlloyFramework
             {
                 try
                 {
-                    _gameEntry.Shutdown();
+                    await _gameEntry.ShutdownAsync();
                 }
                 catch (Exception exception)
                 {
@@ -125,6 +125,24 @@ namespace AlloyFramework
                 _isGameEntryStarted = false;
             }
 
+            ShutdownSystems();
+        }
+
+        private static void ShutdownImmediately()
+        {
+            if (_isShuttingDown)
+            {
+                return;
+            }
+
+            _isShuttingDown = true;
+            _startupCancellation?.Cancel();
+            _isGameEntryStarted = false;
+            ShutdownSystems();
+        }
+
+        private static void ShutdownSystems()
+        {
             for (var index = InitializedSystems.Count - 1; index >= 0; index--)
             {
                 try
@@ -197,11 +215,11 @@ namespace AlloyFramework
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                Shutdown();
+                await ShutdownAsync();
             }
             catch (Exception exception)
             {
-                Shutdown();
+                await ShutdownAsync();
                 StartupFailed?.Invoke(exception);
                 throw;
             }
@@ -287,7 +305,7 @@ namespace AlloyFramework
 
         private static void HandleApplicationQuitting()
         {
-            Shutdown();
+            ShutdownImmediately();
         }
 
         private static void HandleStartupException(Exception exception)
