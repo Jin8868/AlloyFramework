@@ -8,7 +8,7 @@ namespace AlloyFramework.Editor
     public static class FrameworkMenu
     {
         private const string MenuRoot = "★AlloyFramework★/";
-        private const string BootScenePath = "Assets/Scenes/Boot.unity";
+        private const string BootScenePath = "Assets/Res/Scenes/Boot.unity";
 
         [MenuItem(MenuRoot + "启动框架 _F5", false, 0)]
         private static void StartFramework()

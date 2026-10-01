@@ -95,6 +95,18 @@ namespace AlloyFramework
             if (operation.Status != EOperationStatus.Succeed)
                 throw new InvalidOperationException($"Failed to initialize package {packageName}: {operation.Error}");
 
+            var version = package.RequestPackageVersionAsync();
+            await UniTask.WaitUntil(() => version.IsDone, cancellationToken: cancellationToken);
+            if (version.Status != EOperationStatus.Succeed)
+                throw new InvalidOperationException(
+                    $"Failed to request package version {packageName}: {version.Error}");
+
+            var manifest = package.UpdatePackageManifestAsync(version.PackageVersion);
+            await UniTask.WaitUntil(() => manifest.IsDone, cancellationToken: cancellationToken);
+            if (manifest.Status != EOperationStatus.Succeed)
+                throw new InvalidOperationException(
+                    $"Failed to activate package manifest {packageName}/{version.PackageVersion}: {manifest.Error}");
+
             _packages.Add(packageName, package);
             if (packageName == ResourceSettings.DefaultPackageName)
                 YooAssets.SetDefaultPackage(package);
