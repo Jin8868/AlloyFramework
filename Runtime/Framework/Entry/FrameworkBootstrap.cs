@@ -67,6 +67,8 @@ namespace AlloyFramework
             Application.quitting -= HandleApplicationQuitting;
             UniTaskScheduler.UnobservedTaskException -= HandleUnobservedTaskException;
 
+            ResetObjectPools();
+
             _startupCancellation?.Dispose();
             _startupCancellation = null;
             _context = null;
@@ -136,10 +138,23 @@ namespace AlloyFramework
             }
 
             InitializedSystems.Clear();
+            ResetObjectPools();
             _context?.Clear();
             _isInitialized = false;
             _isStarting = false;
             _isShuttingDown = false;
+        }
+
+        private static void ResetObjectPools()
+        {
+            try
+            {
+                ObjectPoolManager.ResetInstance();
+            }
+            catch (Exception exception)
+            {
+                Debug.LogException(exception);
+            }
         }
 
         private static async UniTask RunStartupAsync(CancellationToken cancellationToken)
