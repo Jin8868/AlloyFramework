@@ -342,7 +342,7 @@ public sealed partial class EventSystem
         private readonly List<PendingOperation> _pendingOperations = new List<PendingOperation>(2);
         private HashSet<Delegate> _warnedDestroyedListeners;
         private int _dispatchDepth;
-        private long _dispatchStartTimestamp;
+        private double _dispatchStartedAt;
         private int _dispatchCount;
         private long _lastDispatchUtcTicks;
         private double _lastDispatchMilliseconds;
@@ -367,7 +367,7 @@ public sealed partial class EventSystem
         }
         protected void BeginDispatch()
         {
-            if (_dispatchDepth == 0) _dispatchStartTimestamp = Stopwatch.GetTimestamp();
+            if (_dispatchDepth == 0) _dispatchStartedAt = UnityEngine.Time.realtimeSinceStartupAsDouble;
 #if UNITY_EDITOR
             if (_dispatchDepth == 0 && _owner.DiagnosticsEnabled && _owner.CaptureDispatchStackTrace) _dispatchSourceStackTrace = new StackTrace(3, true).ToString();
 #endif
@@ -449,7 +449,8 @@ public sealed partial class EventSystem
         {
             _dispatchCount++;
             _lastDispatchUtcTicks = DateTime.UtcNow.Ticks;
-            _lastDispatchMilliseconds = (Stopwatch.GetTimestamp() - _dispatchStartTimestamp) * 1000d / Stopwatch.Frequency;
+            _lastDispatchMilliseconds =
+                (UnityEngine.Time.realtimeSinceStartupAsDouble - _dispatchStartedAt) * 1000d;
             _totalDispatchMilliseconds += _lastDispatchMilliseconds;
             if (_lastDispatchMilliseconds > _maxDispatchMilliseconds) _maxDispatchMilliseconds = _lastDispatchMilliseconds;
 #if UNITY_EDITOR

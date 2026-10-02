@@ -27,16 +27,20 @@ namespace AlloyFramework.UI
             m_shutdown = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             try
             {
+                var rootStartedAt = FrameworkStartupLog.Now;
                 m_rootInstance = await ResourceManager.Instance.InstantiateAsync(
                     UISettings.RootLocation, packageName: UISettings.RootPackageName,
                     cancellationToken: m_shutdown.Token);
                 m_shutdown.Token.ThrowIfCancellationRequested();
+                FrameworkStartupLog.Step("加载 UI 根预制体", rootStartedAt);
+                var validationStartedAt = FrameworkStartupLog.Now;
                 m_root = m_rootInstance.Instance.GetComponentInChildren<UIRoot>(true);
                 if (m_root == null)
                     throw new InvalidOperationException($"UIRoot component is missing from {UISettings.RootLocation}.");
                 m_root.Initialize(m_rootInstance.Instance);
                 UnityEngine.Object.DontDestroyOnLoad(m_rootInstance.Instance);
                 Instance = this;
+                FrameworkStartupLog.Step("校验并启用 UI 根节点", validationStartedAt);
             }
             catch
             {

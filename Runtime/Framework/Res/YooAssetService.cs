@@ -52,6 +52,8 @@ namespace AlloyFramework
 
         private async UniTask InitializePackageAsync(string packageName, CancellationToken cancellationToken)
         {
+            var logStartup = FrameworkBootstrap.IsStarting;
+            var packageStartedAt = FrameworkStartupLog.Now;
             var package = YooAssets.TryGetPackage(packageName) ?? YooAssets.CreatePackage(packageName);
             InitializeParameters parameters;
 
@@ -89,27 +91,40 @@ namespace AlloyFramework
                 default:
                     throw new ArgumentOutOfRangeException();
             }
+            if (logStartup)
+                FrameworkStartupLog.Step($"准备资源包 {packageName} ({ResourceSettings.PlayMode})", packageStartedAt);
 
+            var operationStartedAt = FrameworkStartupLog.Now;
             var operation = package.InitializeAsync(parameters);
             await UniTask.WaitUntil(() => operation.IsDone, cancellationToken: cancellationToken);
             if (operation.Status != EOperationStatus.Succeed)
                 throw new InvalidOperationException($"Failed to initialize package {packageName}: {operation.Error}");
+            if (logStartup)
+                FrameworkStartupLog.Step($"初始化资源包 {packageName}", operationStartedAt);
 
+            var versionStartedAt = FrameworkStartupLog.Now;
             var version = package.RequestPackageVersionAsync();
             await UniTask.WaitUntil(() => version.IsDone, cancellationToken: cancellationToken);
             if (version.Status != EOperationStatus.Succeed)
                 throw new InvalidOperationException(
                     $"Failed to request package version {packageName}: {version.Error}");
+            if (logStartup)
+                FrameworkStartupLog.Step($"获取资源包 {packageName} 版本", versionStartedAt);
 
+            var manifestStartedAt = FrameworkStartupLog.Now;
             var manifest = package.UpdatePackageManifestAsync(version.PackageVersion);
             await UniTask.WaitUntil(() => manifest.IsDone, cancellationToken: cancellationToken);
             if (manifest.Status != EOperationStatus.Succeed)
                 throw new InvalidOperationException(
                     $"Failed to activate package manifest {packageName}/{version.PackageVersion}: {manifest.Error}");
+            if (logStartup)
+                FrameworkStartupLog.Step($"激活资源包 {packageName} 清单", manifestStartedAt);
 
             _packages.Add(packageName, package);
             if (packageName == ResourceSettings.DefaultPackageName)
                 YooAssets.SetDefaultPackage(package);
+            if (logStartup)
+                FrameworkStartupLog.Step($"资源包 {packageName} 就绪", packageStartedAt);
         }
 
         public async UniTask<IAssetHandle<T>> LoadAssetAsync<T>(string location, string packageName,
