@@ -7,28 +7,39 @@ using UnityEngine.UI;
 namespace AlloyFramework.UI
 {
     [DisallowMultipleComponent]
-    [RequireComponent(typeof(Canvas))]
-    [RequireComponent(typeof(CanvasScaler))]
     public sealed class UIRoot : MonoBehaviour
     {
         private Dictionary<UILayer, UILayerRoot> m_layers;
+        private CanvasScaler m_scaler;
 
-        public CanvasScaler Scaler => GetComponent<CanvasScaler>();
+        public CanvasScaler Scaler => m_scaler;
 
-        internal void Initialize()
+        internal void Initialize(GameObject prefabRoot)
         {
-            var canvas = GetComponent<Canvas>();
+            if (prefabRoot == null) throw new ArgumentNullException(nameof(prefabRoot));
+            var windowRoot = prefabRoot.transform.Find("WindowRoot");
+            if (windowRoot == null)
+                throw new InvalidOperationException("UIRoot needs a direct child named WindowRoot.");
+            var canvas = windowRoot.GetComponent<Canvas>();
+            if (canvas == null)
+                throw new InvalidOperationException("WindowRoot needs a Canvas.");
+            m_scaler = windowRoot.GetComponent<CanvasScaler>();
+            if (m_scaler == null)
+                throw new InvalidOperationException("WindowRoot needs a CanvasScaler.");
             if (canvas.renderMode == RenderMode.ScreenSpaceCamera && canvas.worldCamera == null)
-                throw new InvalidOperationException("UIRoot Screen Space - Camera canvas has no Render Camera.");
-            var eventSystems = GetComponentsInChildren<UnityEngine.EventSystems.EventSystem>(true);
+                throw new InvalidOperationException("WindowRoot Screen Space - Camera canvas has no Render Camera.");
+            var eventSystems = prefabRoot.GetComponentsInChildren<UnityEngine.EventSystems.EventSystem>(true);
             if (eventSystems.Length != 1 ||
-                eventSystems[0].gameObject.GetComponent<BaseInputModule>() == null)
-                throw new InvalidOperationException("UIRoot needs exactly one EventSystem with an input module.");
+                !eventSystems[0].transform.IsChildOf(windowRoot) ||
+                eventSystems[0].GetComponent<BaseInputModule>() == null)
+                throw new InvalidOperationException("WindowRoot needs exactly one EventSystem with an input module.");
 
-            var found = GetComponentsInChildren<UILayerRoot>(true);
+            var found = prefabRoot.GetComponentsInChildren<UILayerRoot>(true);
             var layers = new Dictionary<UILayer, UILayerRoot>();
             foreach (var layer in found)
             {
+                if (layer.transform.parent != windowRoot)
+                    throw new InvalidOperationException($"UIRoot layer {layer.name} must be a direct child of WindowRoot.");
                 if (!Enum.IsDefined(typeof(UILayer), layer.Layer))
                     throw new InvalidOperationException($"UIRoot has an unknown layer value on {layer.name}.");
                 if (layer.GetComponent<GraphicRaycaster>() == null)

@@ -169,7 +169,7 @@ namespace AlloyFramework.Editor
             var path = AssetDatabase.GetAssetPath(prefab);
             if (!path.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase) ||
                 !path.StartsWith("Assets/Res/Prefabs/UI/", StringComparison.Ordinal) ||
-                !PrefabUtility.IsPartOfPrefabAsset(prefab) || prefab.GetComponent<UIRoot>() != null)
+                !PrefabUtility.IsPartOfPrefabAsset(prefab) || prefab.GetComponentInChildren<UIRoot>(true) != null)
             {
                 m_prefab = null;
                 EditorUtility.DisplayDialog("选择 UI 预制体", "请选择 Assets/Res/Prefabs/UI 内的业务预制体，UIRoot 除外。", "确定");
@@ -187,7 +187,7 @@ namespace AlloyFramework.Editor
             {
                 var path = AssetDatabase.GUIDToAssetPath(guid);
                 var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(path);
-                if (prefab == null || prefab.GetComponent<UIRoot>() != null) continue;
+                if (prefab == null || prefab.GetComponentInChildren<UIRoot>(true) != null) continue;
                 m_prefabs.Add(new PrefabItem
                 {
                     Guid = guid, Path = path, Prefab = prefab,

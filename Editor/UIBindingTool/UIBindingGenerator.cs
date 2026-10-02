@@ -40,7 +40,7 @@ namespace AlloyFramework.Editor
             var root = PrefabUtility.LoadPrefabContents(path);
             try
             {
-                if (root.GetComponent<UIRoot>() != null)
+                if (root.GetComponentInChildren<UIRoot>(true) != null)
                     throw new InvalidOperationException("UIRoot has no UIView bindings to generate.");
                 var view = GetView(root, path);
                 var bindings = Scan(root.transform);
@@ -84,7 +84,7 @@ namespace AlloyFramework.Editor
             var root = PrefabUtility.LoadPrefabContents(path);
             try
             {
-                if (root.GetComponent<UIRoot>() != null) return;
+                if (root.GetComponentInChildren<UIRoot>(true) != null) return;
                 GetView(root, path);
                 var expected = Scan(root.transform);
                 var container = root.GetComponent<UIBinding>() ??

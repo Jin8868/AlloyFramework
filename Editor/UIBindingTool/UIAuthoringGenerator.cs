@@ -58,7 +58,7 @@ namespace AlloyFramework.Editor
             var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath);
             if (prefab == null || !prefabPath.StartsWith("Assets/Res/Prefabs/UI/", StringComparison.Ordinal))
                 throw new InvalidOperationException("请选择 Assets/Res/Prefabs/UI 内的业务 UI 预制体。 ");
-            if (prefab.GetComponent<UIRoot>() != null)
+            if (prefab.GetComponentInChildren<UIRoot>(true) != null)
                 throw new InvalidOperationException("UIRoot 是框架预制体，不能生成业务 View。 ");
 
             ValidateIdentifier(settings.UIName, "UI 名称");

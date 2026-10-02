@@ -31,10 +31,10 @@ namespace AlloyFramework.UI
                     UISettings.RootLocation, packageName: UISettings.RootPackageName,
                     cancellationToken: m_shutdown.Token);
                 m_shutdown.Token.ThrowIfCancellationRequested();
-                m_root = m_rootInstance.Instance.GetComponent<UIRoot>();
+                m_root = m_rootInstance.Instance.GetComponentInChildren<UIRoot>(true);
                 if (m_root == null)
                     throw new InvalidOperationException($"UIRoot component is missing from {UISettings.RootLocation}.");
-                m_root.Initialize();
+                m_root.Initialize(m_rootInstance.Instance);
                 UnityEngine.Object.DontDestroyOnLoad(m_rootInstance.Instance);
                 Instance = this;
             }
