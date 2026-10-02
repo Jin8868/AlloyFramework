@@ -2,7 +2,9 @@
   "name": "Alloy.Editor",
   "rootNamespace": "AlloyFramework.Editor",
   "references": [
-    "Alloy.Runtime"
+    "Alloy.Runtime",
+    "Unity.TextMeshPro",
+    "Unity.ugui"
   ],
   "includePlatforms": [
     "Editor"

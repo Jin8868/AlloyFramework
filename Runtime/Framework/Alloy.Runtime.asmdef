@@ -4,7 +4,8 @@
   "references": [
     "Alloy.Core",
     "UniTask",
-    "YooAsset"
+    "YooAsset",
+    "Unity.ugui"
   ],
   "includePlatforms": [],
   "excludePlatforms": [],
