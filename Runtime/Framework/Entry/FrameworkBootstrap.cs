@@ -15,6 +15,7 @@ namespace AlloyFramework
             new List<FrameworkSystem>();
 
         private static FrameworkContext _context;
+        private static IGameEntryLoader _gameEntryLoader;
         private static IGameEntry _gameEntry;
         private static CancellationTokenSource _startupCancellation;
         private static GameObject _startupScreen;
@@ -43,25 +44,18 @@ namespace AlloyFramework
             if (startupScreen != null) UnityEngine.Object.Destroy(startupScreen);
         }
 
-        public static void SetGameEntry(IGameEntry gameEntry)
+        public static void SetGameEntryLoader(IGameEntryLoader gameEntryLoader)
         {
-            if (gameEntry == null)
-            {
-                throw new ArgumentNullException(nameof(gameEntry));
-            }
-
+            if (gameEntryLoader == null)
+                throw new ArgumentNullException(nameof(gameEntryLoader));
             if (_isStarting || _isInitialized)
-            {
                 throw new InvalidOperationException(
-                    "The game entry must be injected before framework startup.");
-            }
+                    "The game entry loader must be injected before framework startup.");
+            if (_gameEntryLoader != null)
+                throw new InvalidOperationException(
+                    "The game entry loader has already been injected.");
 
-            if (_gameEntry != null)
-            {
-                throw new InvalidOperationException("The game entry has already been injected.");
-            }
-
-            _gameEntry = gameEntry;
+            _gameEntryLoader = gameEntryLoader;
         }
 
         public static TService GetRequired<TService>() where TService : class
@@ -86,6 +80,7 @@ namespace AlloyFramework
             _startupCancellation = null;
             _startupScreen = null;
             _context = null;
+            _gameEntryLoader = null;
             _gameEntry = null;
             _isStarting = false;
             _isInitialized = false;
@@ -246,23 +241,40 @@ namespace AlloyFramework
                 }
                 FrameworkStartupLog.Info($"框架启动完成，总耗时 {FrameworkStartupLog.ElapsedMilliseconds(startupStartedAt):F1} ms");
 
-                if (_gameEntry != null)
+                if (_gameEntryLoader == null)
+                    throw new InvalidOperationException(
+                        "The project must inject an IGameEntryLoader before framework startup.");
+
+                var loaderStartedAt = FrameworkStartupLog.Now;
+                FrameworkStartupLog.Info($"开始加载业务入口: {_gameEntryLoader.GetType().FullName}");
+                try
                 {
-                    _isGameEntryStarted = true;
-                    var gameEntryStartedAt = FrameworkStartupLog.Now;
-                    FrameworkStartupLog.Info($"开始执行业务入口: {_gameEntry.GetType().FullName}");
-                    try
-                    {
-                        await _gameEntry.MainAsync(cancellationToken);
-                        FrameworkStartupLog.Step("业务入口", gameEntryStartedAt);
-                        FrameworkStartupLog.Info(
-                            $"完整启动完成（含业务入口），总耗时 {FrameworkStartupLog.ElapsedMilliseconds(startupStartedAt):F1} ms");
-                    }
-                    catch
-                    {
-                        FrameworkStartupLog.Failure("业务入口", gameEntryStartedAt);
-                        throw;
-                    }
+                    _gameEntry = await _gameEntryLoader.LoadAsync(_context, cancellationToken);
+                    if (_gameEntry == null)
+                        throw new InvalidOperationException(
+                            $"Game entry loader {_gameEntryLoader.GetType().FullName} returned null.");
+                    FrameworkStartupLog.Step("加载业务入口", loaderStartedAt);
+                }
+                catch
+                {
+                    FrameworkStartupLog.Failure("加载业务入口", loaderStartedAt);
+                    throw;
+                }
+
+                _isGameEntryStarted = true;
+                var gameEntryStartedAt = FrameworkStartupLog.Now;
+                FrameworkStartupLog.Info($"开始执行业务入口: {_gameEntry.GetType().FullName}");
+                try
+                {
+                    await _gameEntry.MainAsync(cancellationToken);
+                    FrameworkStartupLog.Step("业务入口", gameEntryStartedAt);
+                    FrameworkStartupLog.Info(
+                        $"完整启动完成（含业务入口），总耗时 {FrameworkStartupLog.ElapsedMilliseconds(startupStartedAt):F1} ms");
+                }
+                catch
+                {
+                    FrameworkStartupLog.Failure("业务入口", gameEntryStartedAt);
+                    throw;
                 }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

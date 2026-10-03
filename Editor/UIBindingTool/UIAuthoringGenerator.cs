@@ -13,8 +13,8 @@ namespace AlloyFramework.Editor
     internal static class UIAuthoringGenerator
     {
         private const string PendingKey = "AlloyFramework.UI.Authoring.Pending";
-        private const string DefinitionPath = "Assets/Scripts/Hotfix/UI/Generated/GameUI.g.cs";
-        private const string HotfixFolder = "Assets/Scripts/Hotfix";
+        private const string DefinitionPath = "Assets/Scripts/Runtime/UI/Generated/GameUI.g.cs";
+        private const string RuntimeFolder = "Assets/Scripts/Runtime";
 
         [Serializable]
         private sealed class PendingGeneration
@@ -182,10 +182,10 @@ namespace AlloyFramework.Editor
             var project = Directory.GetParent(Application.dataPath)?.FullName ??
                           throw new InvalidOperationException("无法确定 Unity 项目路径。");
             var full = Path.GetFullPath(Path.Combine(project, path));
-            var hotfix = Path.GetFullPath(Path.Combine(project, HotfixFolder));
-            if (!full.StartsWith(hotfix + Path.DirectorySeparatorChar,
+            var runtime = Path.GetFullPath(Path.Combine(project, RuntimeFolder));
+            if (!full.StartsWith(runtime + Path.DirectorySeparatorChar,
                     StringComparison.OrdinalIgnoreCase))
-                throw new InvalidOperationException($"{label}必须位于 {HotfixFolder} 内。");
+                throw new InvalidOperationException($"{label}必须位于 {RuntimeFolder} 内。");
             return "Assets" + full.Substring(Application.dataPath.Length).Replace('\\', '/');
         }
 

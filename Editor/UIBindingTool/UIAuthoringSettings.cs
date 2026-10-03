@@ -16,8 +16,8 @@ namespace AlloyFramework.Editor
         [SerializeField] private string m_prefabGuid;
         [SerializeField] private string m_uiName;
         [SerializeField] private string m_scriptNamespace = "Game.UI";
-        [SerializeField] private string m_viewFolder = "Assets/Scripts/Hotfix/UI/Views";
-        [SerializeField] private string m_controllerFolder = "Assets/Scripts/Hotfix/UI/Controllers";
+        [SerializeField] private string m_viewFolder = "Assets/Scripts/Runtime/UI/Views";
+        [SerializeField] private string m_controllerFolder = "Assets/Scripts/Runtime/UI/Controllers";
         [SerializeField] private bool m_hasGenerated;
         [SerializeField] private UILayer m_layer = UILayer.WINDOW;
         [SerializeField] private UILayoutMode m_layout = UILayoutMode.Window;
