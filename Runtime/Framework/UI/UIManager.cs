@@ -295,6 +295,7 @@ namespace AlloyFramework.UI
             token.ThrowIfCancellationRequested();
             entry.Controller.InitData(data);
             SetState(entry, UIState.Opening);
+            EventSystem.Instance.SendEvent(UIEventNames.Opening, entry.Definition.UIName);
             entry.Controller.StartOpenAnimation();
             await entry.Controller.PlayOpenAnimationAsync(token);
             token.ThrowIfCancellationRequested();
@@ -309,6 +310,7 @@ namespace AlloyFramework.UI
             if (entry.State != UIState.Active)
                 throw new OperationCanceledException($"UI {entry.Definition.UIName} closed during OnOpen.", token);
             token.ThrowIfCancellationRequested();
+            EventSystem.Instance.SendEvent(UIEventNames.Opened, entry.Definition.UIName);
             return handle;
         }
 
@@ -332,6 +334,7 @@ namespace AlloyFramework.UI
             var completion = new UniTaskCompletionSource();
             entry.Closing = completion;
             SetState(entry, UIState.Closing);
+            EventSystem.Instance.SendEvent(UIEventNames.Closing, entry.Definition.UIName);
             try
             {
                 var controller = entry.Controller;
@@ -350,13 +353,17 @@ namespace AlloyFramework.UI
                 entry.Handle = null;
                 controller?.SetHandle(null);
                 if (entry.Definition.CacheMode == UICacheMode.DestroyOnClose)
+                {
+                    EventSystem.Instance.SendEvent(UIEventNames.Closed, entry.Definition.UIName);
                     Release(entry);
+                }
                 else
                 {
                     entry.Instance.Instance.SetActive(false);
                     SetState(entry, UIState.Cached);
                     entry.Lifetime?.Dispose();
                     entry.Lifetime = null;
+                    EventSystem.Instance.SendEvent(UIEventNames.Closed, entry.Definition.UIName);
                 }
                 completion.TrySetResult();
             }
@@ -394,6 +401,8 @@ namespace AlloyFramework.UI
         private void Release(UIEntry entry)
         {
             if (entry.State == UIState.Disposed) return;
+            var uiName = entry.Definition.UIName;
+            var hadInstance = entry.Instance != null;
             entry.Lifetime?.Cancel();
             entry.Handle?.Invalidate();
             entry.Handle = null;
@@ -410,6 +419,8 @@ namespace AlloyFramework.UI
             entry.Lifetime?.Dispose();
             entry.Lifetime = null;
             m_entries.Remove(entry);
+            if (hadInstance)
+                EventSystem.Instance.SendEvent(UIEventNames.Destroyed, uiName);
         }
 
         private void EnsureReady()
