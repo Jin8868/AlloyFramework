@@ -9,12 +9,15 @@ namespace AlloyFramework
 {
     public static class FrameworkBootstrap
     {
+        private const string StartupScreenObjectName = "FrameworkSplash";
+
         private static readonly List<FrameworkSystem> InitializedSystems =
             new List<FrameworkSystem>();
 
         private static FrameworkContext _context;
         private static IGameEntry _gameEntry;
         private static CancellationTokenSource _startupCancellation;
+        private static GameObject _startupScreen;
         private static bool _isStarting;
         private static bool _isInitialized;
         private static bool _isShuttingDown;
@@ -29,6 +32,16 @@ namespace AlloyFramework
         public static event Action Initialized;
 
         public static event Action<Exception> StartupFailed;
+
+        /// <summary>
+        /// 销毁框架启动时保存的启动画面。没有找到或已经销毁时不会执行任何操作。
+        /// </summary>
+        public static void DestroyStartupScreen()
+        {
+            var startupScreen = _startupScreen;
+            _startupScreen = null;
+            if (startupScreen != null) UnityEngine.Object.Destroy(startupScreen);
+        }
 
         public static void SetGameEntry(IGameEntry gameEntry)
         {
@@ -71,6 +84,7 @@ namespace AlloyFramework
 
             _startupCancellation?.Dispose();
             _startupCancellation = null;
+            _startupScreen = null;
             _context = null;
             _gameEntry = null;
             _isStarting = false;
@@ -101,6 +115,12 @@ namespace AlloyFramework
             UniTaskScheduler.UnobservedTaskException += HandleUnobservedTaskException;
 
             RunStartupAsync(_startupCancellation.Token, startupStartedAt).Forget(HandleStartupException);
+        }
+
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
+        private static void CaptureStartupScreen()
+        {
+            _startupScreen = GameObject.Find(StartupScreenObjectName);
         }
 
         public static async UniTask ShutdownAsync()

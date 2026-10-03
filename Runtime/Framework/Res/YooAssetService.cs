@@ -128,7 +128,7 @@ namespace AlloyFramework
         }
 
         public async UniTask<IAssetHandle<T>> LoadAssetAsync<T>(string location, string packageName,
-            IProgress<float> progress, CancellationToken cancellationToken) where T : UnityEngine.Object
+            Action<float> progressCallback, CancellationToken cancellationToken) where T : UnityEngine.Object
         {
             ValidateLocation(location);
             cancellationToken.ThrowIfCancellationRequested();
@@ -146,7 +146,7 @@ namespace AlloyFramework
             {
                 await UniTask.WaitUntil(() =>
                 {
-                    progress?.Report(shared.Handle.Progress);
+                    progressCallback?.Invoke(shared.Handle.Progress);
                     return shared.Handle.IsDone;
                 }, cancellationToken: cancellationToken);
                 cancellationToken.ThrowIfCancellationRequested();
@@ -157,7 +157,7 @@ namespace AlloyFramework
                 if (asset == null)
                     throw new InvalidOperationException($"Asset has wrong type or is null: {packageName}/{location} ({typeof(T).Name})");
 
-                progress?.Report(1f);
+                progressCallback?.Invoke(1f);
                 return new AssetLease<T>(asset, () => Release(key, shared));
             }
             catch
@@ -168,9 +168,10 @@ namespace AlloyFramework
         }
 
         public async UniTask<IInstanceHandle> InstantiateAsync(string location, string packageName, Transform parent,
-            IProgress<float> progress, CancellationToken cancellationToken)
+            Action<float> progressCallback, CancellationToken cancellationToken)
         {
-            var prefab = await LoadAssetAsync<GameObject>(location, packageName, progress, cancellationToken);
+            var prefab = await LoadAssetAsync<GameObject>(
+                location, packageName, progressCallback, cancellationToken);
             try
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -185,7 +186,7 @@ namespace AlloyFramework
         }
 
         public async UniTask<ISceneHandle> LoadSceneAsync(string location, string packageName, LoadSceneMode mode,
-            IProgress<float> progress, CancellationToken cancellationToken)
+            Action<float> progressCallback, CancellationToken cancellationToken)
         {
             ValidateLocation(location);
             cancellationToken.ThrowIfCancellationRequested();
@@ -194,13 +195,13 @@ namespace AlloyFramework
             {
                 await UniTask.WaitUntil(() =>
                 {
-                    progress?.Report(handle.Progress);
+                    progressCallback?.Invoke(handle.Progress);
                     return handle.IsDone;
                 }, cancellationToken: cancellationToken);
                 cancellationToken.ThrowIfCancellationRequested();
                 if (handle.Status != EOperationStatus.Succeed)
                     throw new InvalidOperationException($"Failed to load scene {packageName}/{location}: {handle.LastError}");
-                progress?.Report(1f);
+                progressCallback?.Invoke(1f);
                 return new SceneLease(handle);
             }
             catch

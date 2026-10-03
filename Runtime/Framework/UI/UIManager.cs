@@ -273,8 +273,9 @@ namespace AlloyFramework.UI
                 BringToFront(entry);
             }
 
-            var canvasGroup = entry.Instance.Instance.GetComponent<CanvasGroup>() ??
-                entry.Instance.Instance.AddComponent<CanvasGroup>();
+            var canvasGroup = entry.Instance.Instance.GetComponent<CanvasGroup>();
+            if (canvasGroup == null)
+                canvasGroup = entry.Instance.Instance.AddComponent<CanvasGroup>();
             canvasGroup.alpha = 0f;
             canvasGroup.interactable = false;
             canvasGroup.blocksRaycasts = false;

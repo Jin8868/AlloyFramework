@@ -33,27 +33,30 @@ namespace AlloyFramework
 
         public UniTask<IAssetHandle<T>> LoadAssetAsync<T>(string location,
             string packageName = ResourceSettings.DefaultPackageName,
-            IProgress<float> progress = null,
+            Action<float> progressCallback = null,
             CancellationToken cancellationToken = default) where T : UnityEngine.Object
         {
-            return GetService().LoadAssetAsync<T>(location, packageName, progress, cancellationToken);
+            return GetService().LoadAssetAsync<T>(
+                location, packageName, progressCallback, cancellationToken);
         }
 
         public UniTask<IInstanceHandle> InstantiateAsync(string location, Transform parent = null,
             string packageName = ResourceSettings.DefaultPackageName,
-            IProgress<float> progress = null,
+            Action<float> progressCallback = null,
             CancellationToken cancellationToken = default)
         {
-            return GetService().InstantiateAsync(location, packageName, parent, progress, cancellationToken);
+            return GetService().InstantiateAsync(
+                location, packageName, parent, progressCallback, cancellationToken);
         }
 
         public UniTask<ISceneHandle> LoadSceneAsync(string location,
+            Action<float> progressCallback = null,
             LoadSceneMode mode = LoadSceneMode.Single,
             string packageName = ResourceSettings.DefaultPackageName,
-            IProgress<float> progress = null,
             CancellationToken cancellationToken = default)
         {
-            return GetService().LoadSceneAsync(location, packageName, mode, progress, cancellationToken);
+            return GetService().LoadSceneAsync(
+                location, packageName, mode, progressCallback, cancellationToken);
         }
 
         public UniTask UnloadUnusedAsync(string packageName = ResourceSettings.DefaultPackageName,
