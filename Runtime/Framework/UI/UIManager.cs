@@ -262,7 +262,6 @@ namespace AlloyFramework.UI
                 entry.View = gameObject.GetComponent(entry.Definition.ViewType) as UIView;
                 if (entry.View == null)
                     throw new InvalidOperationException($"UI {entry.Definition.UIName} is missing {entry.Definition.ViewType.Name} on the prefab root.");
-                entry.View.Bind();
                 entry.Controller = entry.Definition.CreateController();
                 entry.Controller.UIName = entry.Definition.UIName;
                 entry.Controller.State = entry.State;
@@ -296,7 +295,8 @@ namespace AlloyFramework.UI
             entry.Controller.InitData(data);
             SetState(entry, UIState.Opening);
             entry.Controller.StartOpenAnimation();
-            // The animation player is inserted here; the first stage has an immediate transition.
+            await entry.Controller.PlayOpenAnimationAsync(token);
+            token.ThrowIfCancellationRequested();
             entry.Controller.EndOpenAnimation();
             token.ThrowIfCancellationRequested();
             canvasGroup.alpha = 1f;
@@ -339,9 +339,12 @@ namespace AlloyFramework.UI
                     controller.Closed();
                     entry.Opened = false;
                 }
-                controller?.StartCloseAnimation();
-                // The animation player is inserted here; the first stage has an immediate transition.
-                controller?.EndCloseAnimation();
+                if (controller != null)
+                {
+                    controller.StartCloseAnimation();
+                    await controller.PlayCloseAnimationAsync();
+                    controller.EndCloseAnimation();
+                }
                 entry.Handle?.Invalidate();
                 entry.Handle = null;
                 controller?.SetHandle(null);

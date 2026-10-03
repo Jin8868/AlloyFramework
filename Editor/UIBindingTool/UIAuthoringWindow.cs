@@ -18,7 +18,7 @@ namespace AlloyFramework.Editor
         }
 
         [SerializeField] private GameObject m_prefab;
-        [SerializeField] private UIAuthoringSettings m_settings;
+        [NonSerialized] private UIAuthoringSettings m_settings;
         [SerializeField] private string m_search = string.Empty;
         private readonly List<PrefabItem> m_prefabs = new List<PrefabItem>();
         private Vector2 m_listScroll;
@@ -130,7 +130,7 @@ namespace AlloyFramework.Editor
             m_settings.OpenMode = (UIOpenMode)EditorGUILayout.EnumPopup("重复打开", m_settings.OpenMode);
             m_settings.Navigation = (UINavigationMode)EditorGUILayout.EnumPopup("导航", m_settings.Navigation);
             m_settings.PauseCovered = EditorGUILayout.Toggle("覆盖时暂停下层", m_settings.PauseCovered);
-            if (EditorGUI.EndChangeCheck()) EditorUtility.SetDirty(m_settings);
+            if (EditorGUI.EndChangeCheck()) UIAuthoringSettings.SetDirty();
             if (m_settings.Background == UIBackgroundMode.Blur)
                 EditorGUILayout.HelpBox("模糊会写入 UI 定义；运行时模糊效果将在后续阶段实现。", MessageType.Warning);
             EditorGUILayout.HelpBox("布局、背景遮罩、点击空白关闭、导航和覆盖暂停目前只写入定义；对应运行时策略将在后续阶段实现。", MessageType.Info);
@@ -146,9 +146,10 @@ namespace AlloyFramework.Editor
             SaveSettings();
             try
             {
-                var settingsPath = UIAuthoringSettings.GetAssetPath(m_settings.PrefabGuid);
-                AssetDatabase.ImportAsset(settingsPath, ImportAssetOptions.ForceUpdate);
-                m_settings = AssetDatabase.LoadAssetAtPath<UIAuthoringSettings>(settingsPath);
+                var prefabGuid = m_settings.PrefabGuid;
+                AssetDatabase.ImportAsset(UIAuthoringDatabase.AssetPath,
+                    ImportAssetOptions.ForceUpdate);
+                m_settings = UIAuthoringSettings.TryLoad(prefabGuid);
                 UIAuthoringGenerator.Generate(m_settings);
                 RefreshPrefabs();
                 ShowNotification(new GUIContent("脚本已生成，编译完成后自动绑定预制体。"));
@@ -229,7 +230,7 @@ namespace AlloyFramework.Editor
 
         private void SaveSettings()
         {
-            if (m_settings != null && EditorUtility.IsDirty(m_settings)) AssetDatabase.SaveAssets();
+            if (m_settings != null) UIAuthoringSettings.Save();
         }
     }
 }

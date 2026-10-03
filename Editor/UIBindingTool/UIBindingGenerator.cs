@@ -11,15 +11,19 @@ namespace AlloyFramework.Editor
 {
     internal static class UIBindingGenerator
     {
+        private const string BlockStart = "        // <alloy-generated-bindings>";
+        private const string BlockEnd = "        // </alloy-generated-bindings>";
+
         private sealed class BindingInfo
         {
             public string Name;
+            public string FieldName;
             public string Path;
             public Type Type;
             public UnityEngine.Object Reference;
         }
 
-        [MenuItem("★AlloyFramework★/UI/校验全部界面绑定", false, 102)]
+        [MenuItem("AlloyFramework/UI/校验全部界面绑定", false, 102)]
         private static void ValidateAll()
         {
             var failures = new List<string>();
@@ -32,51 +36,50 @@ namespace AlloyFramework.Editor
             }
             if (failures.Count > 0)
                 throw new InvalidOperationException(string.Join("\n", failures));
-            Debug.Log($"Validated {guids.Length} UI prefabs.");
+            Debug.Log($"已校验 {guids.Length} 个 UI 预制体绑定。");
         }
 
-        internal static void Generate(string path, string generatedDirectory)
+        internal static void GenerateViewSource(GameObject prefab, string scriptNamespace,
+            string viewName, string viewPath)
         {
-            var root = PrefabUtility.LoadPrefabContents(path);
+            var block = BuildBindingBlock(Scan(prefab.transform));
+            Directory.CreateDirectory(Path.GetDirectoryName(viewPath) ?? string.Empty);
+            if (!File.Exists(viewPath))
+            {
+                File.WriteAllText(viewPath, BuildView(scriptNamespace, viewName, block),
+                    new UTF8Encoding(false));
+                return;
+            }
+
+            var source = File.ReadAllText(viewPath);
+            var start = source.IndexOf(BlockStart, StringComparison.Ordinal);
+            var end = source.IndexOf(BlockEnd, StringComparison.Ordinal);
+            if (start < 0 || end < 0 || end < start ||
+                source.IndexOf(BlockStart, start + BlockStart.Length, StringComparison.Ordinal) >= 0 ||
+                source.IndexOf(BlockEnd, end + BlockEnd.Length, StringComparison.Ordinal) >= 0)
+                throw new InvalidOperationException(
+                    $"View 文件缺少唯一的自动绑定区块，生成器不会覆盖手写代码：{viewPath}");
+
+            end += BlockEnd.Length;
+            File.WriteAllText(viewPath,
+                source.Substring(0, start) + block + source.Substring(end), new UTF8Encoding(false));
+        }
+
+        internal static void ApplyBindings(string prefabPath)
+        {
+            var root = PrefabUtility.LoadPrefabContents(prefabPath);
             try
             {
                 if (root.GetComponentInChildren<UIRoot>(true) != null)
-                    throw new InvalidOperationException("UIRoot has no UIView bindings to generate.");
-                var view = GetView(root, path);
+                    throw new InvalidOperationException("UIRoot 不需要生成业务界面绑定。");
+                var view = GetView(root, prefabPath);
                 var bindings = Scan(root.transform);
-                var container = root.GetComponent<UIBinding>() ?? root.AddComponent<UIBinding>();
-                var serialized = new SerializedObject(container);
-                var references = serialized.FindProperty("m_references");
-                var paths = serialized.FindProperty("m_paths");
-                references.arraySize = bindings.Count;
-                paths.arraySize = bindings.Count;
-                for (var index = 0; index < bindings.Count; index++)
-                {
-                    references.GetArrayElementAtIndex(index).objectReferenceValue = bindings[index].Reference;
-                    paths.GetArrayElementAtIndex(index).stringValue = bindings[index].Path;
-                }
-                serialized.ApplyModifiedPropertiesWithoutUndo();
-
-                Directory.CreateDirectory(generatedDirectory);
-                var sourcePath = $"{generatedDirectory}/{view.GetType().Name}.Binding.g.cs";
-                File.WriteAllText(sourcePath, BuildSource(view.GetType().Namespace,
-                    view.GetType().Name, bindings), new UTF8Encoding(false));
-                PrefabUtility.SaveAsPrefabAsset(root, path);
-                AssetDatabase.ImportAsset(sourcePath);
+                WriteBindings(view, bindings);
+                PrefabUtility.SaveAsPrefabAsset(root, prefabPath);
                 AssetDatabase.SaveAssets();
-                Debug.Log($"Generated {bindings.Count} bindings for {path}.");
+                Debug.Log($"已为 {prefabPath} 写入 {bindings.Count} 个强类型绑定。");
             }
             finally { PrefabUtility.UnloadPrefabContents(root); }
-        }
-
-        internal static void GenerateSource(GameObject prefab, string scriptNamespace,
-            string viewName, string generatedDirectory)
-        {
-            var bindings = Scan(prefab.transform);
-            Directory.CreateDirectory(generatedDirectory);
-            var sourcePath = $"{generatedDirectory}/{viewName}.Binding.g.cs";
-            File.WriteAllText(sourcePath, BuildSource(scriptNamespace, viewName, bindings),
-                new UTF8Encoding(false));
         }
 
         private static void Validate(string path)
@@ -85,20 +88,15 @@ namespace AlloyFramework.Editor
             try
             {
                 if (root.GetComponentInChildren<UIRoot>(true) != null) return;
-                GetView(root, path);
-                var expected = Scan(root.transform);
-                var container = root.GetComponent<UIBinding>() ??
-                    throw new InvalidOperationException("UIBinding is missing.");
-                var serialized = new SerializedObject(container);
-                var references = serialized.FindProperty("m_references");
-                var paths = serialized.FindProperty("m_paths");
-                if (references.arraySize != expected.Count || paths.arraySize != expected.Count)
-                    throw new InvalidOperationException("Binding count does not match the prefab hierarchy.");
-                for (var index = 0; index < expected.Count; index++)
+                var view = GetView(root, path);
+                foreach (var binding in Scan(root.transform))
                 {
-                    if (references.GetArrayElementAtIndex(index).objectReferenceValue != expected[index].Reference ||
-                        paths.GetArrayElementAtIndex(index).stringValue != expected[index].Path)
-                        throw new InvalidOperationException($"Binding mismatch at {expected[index].Path}.");
+                    var property = new SerializedObject(view).FindProperty(binding.FieldName);
+                    if (property == null)
+                        throw new InvalidOperationException(
+                            $"{view.GetType().Name} 缺少生成字段 {binding.FieldName}，请重新生成。");
+                    if (property.objectReferenceValue != binding.Reference)
+                        throw new InvalidOperationException($"绑定不匹配：{binding.Path} -> {binding.Name}。");
                 }
             }
             finally { PrefabUtility.UnloadPrefabContents(root); }
@@ -108,19 +106,32 @@ namespace AlloyFramework.Editor
         {
             var views = root.GetComponents<UIView>();
             if (views.Length != 1)
-                throw new InvalidOperationException($"{path} must have exactly one UIView on its root.");
+                throw new InvalidOperationException($"{path} 的根节点必须且只能挂载一个 UIView。");
             return views[0];
+        }
+
+        private static void WriteBindings(UIView view, IReadOnlyList<BindingInfo> bindings)
+        {
+            var serializedView = new SerializedObject(view);
+            foreach (var binding in bindings)
+            {
+                var property = serializedView.FindProperty(binding.FieldName);
+                if (property == null)
+                    throw new InvalidOperationException(
+                        $"{view.GetType().Name} 缺少生成字段 {binding.FieldName}，请等待编译完成后重新生成。");
+                property.objectReferenceValue = binding.Reference;
+            }
+            serializedView.ApplyModifiedPropertiesWithoutUndo();
         }
 
         private static List<BindingInfo> Scan(Transform root)
         {
             var result = new List<BindingInfo>();
-            var rules = UIBindingPrefixSettings.LoadRules();
-            Visit(root, root.name, result, rules);
+            Visit(root, root.name, result, UIBindingPrefixSettings.LoadRules());
             result.Sort((left, right) => string.CompareOrdinal(left.Path, right.Path));
-            var duplicates = result.GroupBy(item => item.Name).FirstOrDefault(group => group.Count() > 1);
-            if (duplicates != null)
-                throw new InvalidOperationException($"Duplicate binding field {duplicates.Key}.");
+            var duplicate = result.GroupBy(item => item.Name).FirstOrDefault(group => group.Count() > 1);
+            if (duplicate != null)
+                throw new InvalidOperationException($"绑定属性重名：{duplicate.Key}。");
             return result;
         }
 
@@ -132,21 +143,24 @@ namespace AlloyFramework.Editor
                 if (!node.name.StartsWith(rule.Prefix, StringComparison.OrdinalIgnoreCase)) continue;
                 var suffix = node.name.Substring(rule.Prefix.Length);
                 if (string.IsNullOrWhiteSpace(suffix))
-                    throw new InvalidOperationException($"Binding name is empty at {path}.");
+                    throw new InvalidOperationException($"绑定名称不能为空：{path}。");
                 var stem = rule.Prefix.Substring(0, rule.Prefix.Length - 1);
                 var property = string.Concat(char.ToUpperInvariant(stem[0]), stem.Substring(1),
                     string.Concat(suffix.Split('_').Where(part => part.Length > 0)
                         .Select(part => char.ToUpperInvariant(part[0]) + part.Substring(1))));
-                if (!char.IsLetter(property[0]) && property[0] != '_')
-                    throw new InvalidOperationException($"Invalid binding field name {property} at {path}.");
-                for (var characterIndex = 1; characterIndex < property.Length; characterIndex++)
-                    if (!char.IsLetterOrDigit(property[characterIndex]) && property[characterIndex] != '_')
-                        throw new InvalidOperationException($"Invalid binding field name {property} at {path}.");
+                ValidateIdentifier(property, path);
                 var component = rule.ComponentType == typeof(GameObject)
                     ? (UnityEngine.Object)node.gameObject : node.GetComponent(rule.ComponentType);
                 if (component == null)
-                    throw new InvalidOperationException($"{path} requires {rule.ComponentType.Name}.");
-                result.Add(new BindingInfo { Name = property, Path = path, Type = rule.ComponentType, Reference = component });
+                    throw new InvalidOperationException($"{path} 需要组件 {rule.ComponentType.Name}。");
+                result.Add(new BindingInfo
+                {
+                    Name = property,
+                    FieldName = "m_" + char.ToLowerInvariant(property[0]) + property.Substring(1),
+                    Path = path,
+                    Type = rule.ComponentType,
+                    Reference = component
+                });
                 break;
             }
             for (var index = 0; index < node.childCount; index++)
@@ -156,29 +170,48 @@ namespace AlloyFramework.Editor
             }
         }
 
-        private static string BuildSource(string scriptNamespace, string viewName,
-            List<BindingInfo> bindings)
+        private static void ValidateIdentifier(string value, string path)
+        {
+            if (value.Length == 0 || !char.IsLetter(value[0]) && value[0] != '_')
+                throw new InvalidOperationException($"绑定字段名称无效：{value}，节点：{path}。");
+            for (var index = 1; index < value.Length; index++)
+                if (!char.IsLetterOrDigit(value[index]) && value[index] != '_')
+                    throw new InvalidOperationException($"绑定字段名称无效：{value}，节点：{path}。");
+        }
+
+        private static string BuildView(string scriptNamespace, string viewName, string block)
         {
             var source = new StringBuilder();
-            source.AppendLine("// <auto-generated />");
-            source.AppendLine("// 由 AlloyFramework UI 生成器生成，切勿手动修改。");
-            source.AppendLine("namespace " + scriptNamespace);
+            source.AppendLine("using AlloyFramework.UI;");
+            source.AppendLine();
+            source.AppendLine($"namespace {scriptNamespace}");
             source.AppendLine("{");
-            source.AppendLine("    public sealed partial class " + viewName);
+            source.AppendLine($"    public sealed partial class {viewName} : UIView");
             source.AppendLine("    {");
-            foreach (var binding in bindings)
-                source.AppendLine($"        public {binding.Type.FullName} {binding.Name} {{ get; private set; }}");
-            source.AppendLine("        protected override void BindComponents(AlloyFramework.UI.UIBinding binding)");
-            source.AppendLine("        {");
-            for (var index = 0; index < bindings.Count; index++)
-            {
-                var item = bindings[index];
-                source.AppendLine($"            {item.Name} = binding.Get<{item.Type.FullName}>({index}, \"{item.Name}\");");
-            }
-            source.AppendLine("        }");
+            source.AppendLine(block);
             source.AppendLine("    }");
             source.AppendLine("}");
             return source.ToString();
         }
+
+        private static string BuildBindingBlock(IReadOnlyList<BindingInfo> bindings)
+        {
+            var source = new StringBuilder();
+            source.AppendLine(BlockStart);
+            source.AppendLine("        // 此区块由 AlloyFramework UI 生成器维护，请勿手动修改。");
+            foreach (var binding in bindings)
+            {
+                source.AppendLine("        [UnityEngine.SerializeField, AlloyFramework.UI.UIBindingReference]");
+                source.AppendLine($"        private {GetTypeName(binding.Type)} {binding.FieldName};");
+                source.AppendLine();
+                source.AppendLine($"        public {GetTypeName(binding.Type)} {binding.Name} => {binding.FieldName};");
+                source.AppendLine();
+            }
+            if (bindings.Count > 0) source.Length -= Environment.NewLine.Length;
+            source.Append(BlockEnd);
+            return source.ToString();
+        }
+
+        private static string GetTypeName(Type type) => type.FullName?.Replace('+', '.') ?? type.Name;
     }
 }

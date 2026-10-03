@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using AlloyFramework.UI;
 using UnityEditor;
@@ -6,11 +7,12 @@ using UnityEngine;
 
 namespace AlloyFramework.Editor
 {
-    // Editor-only source of truth for the code generator. One asset is stored per prefab GUID.
-    public sealed class UIAuthoringSettings : ScriptableObject
+    /// <summary>
+    /// 单个业务 UI 的编辑器生成配置，由 UIAuthoringDatabase 统一保存。
+    /// </summary>
+    [Serializable]
+    public sealed class UIAuthoringSettings
     {
-        public const string SettingsFolder = "Assets/Editor/AlloyFramework/UIAuthoring";
-
         [SerializeField] private string m_prefabGuid;
         [SerializeField] private string m_uiName;
         [SerializeField] private string m_scriptNamespace = "Game.UI";
@@ -41,46 +43,35 @@ namespace AlloyFramework.Editor
         public UINavigationMode Navigation { get => m_navigation; set => m_navigation = value; }
         public bool PauseCovered { get => m_pauseCovered; set => m_pauseCovered = value; }
 
+        internal static UIAuthoringSettings Create(string prefabGuid, string prefabPath) =>
+            new UIAuthoringSettings
+            {
+                m_prefabGuid = prefabGuid,
+                m_uiName = MakeIdentifier(Path.GetFileNameWithoutExtension(prefabPath))
+            };
+
         internal void MarkGenerated()
         {
             m_hasGenerated = true;
-            EditorUtility.SetDirty(this);
+            SetDirty();
         }
 
-        public static UIAuthoringSettings LoadOrCreate(string prefabPath)
-        {
-            var guid = AssetDatabase.AssetPathToGUID(prefabPath);
-            if (string.IsNullOrEmpty(guid))
-                throw new ArgumentException("请选择项目中的预制体资源。", nameof(prefabPath));
-
-            var assetPath = GetAssetPath(guid);
-            var settings = AssetDatabase.LoadAssetAtPath<UIAuthoringSettings>(assetPath);
-            if (settings != null) return settings;
-
-            EnsureSettingsFolder();
-
-            settings = CreateInstance<UIAuthoringSettings>();
-            settings.m_prefabGuid = guid;
-            settings.m_uiName = MakeIdentifier(Path.GetFileNameWithoutExtension(prefabPath));
-            AssetDatabase.CreateAsset(settings, assetPath);
-            AssetDatabase.SaveAssets();
-            return settings;
-        }
+        public static UIAuthoringSettings LoadOrCreate(string prefabPath) =>
+            UIAuthoringDatabase.LoadOrCreate().GetOrCreate(prefabPath);
 
         public static UIAuthoringSettings TryLoad(string prefabGuid) =>
-            AssetDatabase.LoadAssetAtPath<UIAuthoringSettings>(GetAssetPath(prefabGuid));
+            UIAuthoringDatabase.LoadOrCreate().Find(prefabGuid);
 
-        public static string GetAssetPath(string prefabGuid) => $"{SettingsFolder}/{prefabGuid}.asset";
+        public static IReadOnlyList<UIAuthoringSettings> All =>
+            UIAuthoringDatabase.LoadOrCreate().Items;
 
-        private static void EnsureSettingsFolder()
+        internal static void SetDirty() =>
+            EditorUtility.SetDirty(UIAuthoringDatabase.LoadOrCreate());
+
+        internal static void Save()
         {
-            var parent = "Assets";
-            foreach (var segment in new[] { "Editor", "AlloyFramework", "UIAuthoring" })
-            {
-                var next = parent + "/" + segment;
-                if (!AssetDatabase.IsValidFolder(next)) AssetDatabase.CreateFolder(parent, segment);
-                parent = next;
-            }
+            SetDirty();
+            AssetDatabase.SaveAssets();
         }
 
         private static string MakeIdentifier(string value)

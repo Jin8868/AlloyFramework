@@ -26,23 +26,29 @@ namespace AlloyFramework.UI
 
         internal void Create() => OnCreate();
         internal void StartOpenAnimation() => OnStartOpenAnimation();
+        internal UniTask PlayOpenAnimationAsync(CancellationToken cancellationToken) =>
+            OnOpenAnimationAsync(cancellationToken);
         internal void EndOpenAnimation() => OnEndOpenAnimation();
         internal void Opened() => OnOpen();
         internal void Pause() => OnPause();
         internal void Resume() => OnResume();
         internal void Closed() => OnClose();
         internal void StartCloseAnimation() => OnStartCloseAnimation();
+        internal UniTask PlayCloseAnimationAsync() => OnCloseAnimationAsync();
         internal void EndCloseAnimation() => OnEndCloseAnimation();
         internal void DisposeController() { OnDispose(); m_handle = null; }
 
         protected virtual void OnCreate() { }
         protected virtual void OnStartOpenAnimation() { }
+        protected virtual UniTask OnOpenAnimationAsync(CancellationToken cancellationToken) =>
+            UniTask.CompletedTask;
         protected virtual void OnEndOpenAnimation() { }
         protected virtual void OnOpen() { }
         protected virtual void OnPause() { }
         protected virtual void OnResume() { }
         protected virtual void OnClose() { }
         protected virtual void OnStartCloseAnimation() { }
+        protected virtual UniTask OnCloseAnimationAsync() => UniTask.CompletedTask;
         protected virtual void OnEndCloseAnimation() { }
         protected virtual void OnDispose() { }
     }

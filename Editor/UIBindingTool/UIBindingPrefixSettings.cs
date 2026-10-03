@@ -31,7 +31,8 @@ namespace AlloyFramework.Editor
         protected virtual void ConfigureRules(IList<UIBindingRule> rules)
         {
             rules.Add(new UIBindingRule("btn_", typeof(Button)));
-            rules.Add(new UIBindingRule("txt_", typeof(TMP_Text)));
+            rules.Add(new UIBindingRule("txt_", typeof(Text)));
+            rules.Add(new UIBindingRule("tmp_", typeof(TMP_Text)));
             rules.Add(new UIBindingRule("img_", typeof(Image)));
             rules.Add(new UIBindingRule("raw_", typeof(RawImage)));
             rules.Add(new UIBindingRule("input_", typeof(TMP_InputField)));
