@@ -13,7 +13,7 @@ namespace AlloyFramework.UI
             new Dictionary<string, UIDefinition>(StringComparer.Ordinal);
         private readonly List<UIEntry> m_entries = new List<UIEntry>();
         private UINavigator m_navigator; // 配置驱动的 UI 导航器。
-        private IUIDefinitionProvider m_definitionProvider; // 业务安装的懒加载 UI 定义提供器。
+        private IUIDefinitionProvider m_definitionProvider; // 业务安装的 UI 定义提供器。
         private CancellationTokenSource m_shutdown;
         private IInstanceHandle m_rootInstance;
         private UIRoot m_root;
@@ -97,7 +97,7 @@ namespace AlloyFramework.UI
         }
 
         /// <summary>
-        /// 安装按名称延迟解析业务 UI 定义的提供器。
+        /// 安装按名称查询业务 UI 定义的提供器。
         /// </summary>
         /// <param name="provider">业务 UI 定义提供器。</param>
         public void SetDefinitionProvider(IUIDefinitionProvider provider)

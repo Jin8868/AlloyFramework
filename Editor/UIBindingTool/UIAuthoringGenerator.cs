@@ -13,8 +13,14 @@ namespace AlloyFramework.Editor
     internal static class UIAuthoringGenerator
     {
         private const string PendingKey = "AlloyFramework.UI.Authoring.Pending";
-        private const string DefinitionPath = "Assets/Scripts/Runtime/UI/Generated/GameUI.g.cs";
+        private const string DefinitionPath =
+            "Assets/Scripts/Runtime/UI/Generated/GameUI.Definitions.g.cs";
+        private const string PropertiesPath =
+            "Assets/Scripts/Runtime/UI/Generated/GameUI.Properties.g.cs";
+        private const string LegacyDefinitionPath =
+            "Assets/Scripts/Runtime/UI/Generated/GameUI.g.cs";
         private const string RuntimeFolder = "Assets/Scripts/Runtime";
+        private const int DEFINITIONCHUNKSIZE = 256;
 
         [Serializable]
         private sealed class PendingGeneration
@@ -87,6 +93,8 @@ namespace AlloyFramework.Editor
                     "预制体根节点已有不同的 UIView，请先检查；生成器不会删除组件。");
 
             EnsureWritableGeneratedFile(DefinitionPath);
+            EnsureWritableGeneratedFile(PropertiesPath);
+            EnsureWritableGeneratedFile(LegacyDefinitionPath);
             Directory.CreateDirectory(viewFolder);
             Directory.CreateDirectory(controllerFolder);
             Directory.CreateDirectory(Path.GetDirectoryName(DefinitionPath) ?? string.Empty);
@@ -321,6 +329,7 @@ namespace AlloyFramework.Editor
 
         private static void WriteDefinitions(UIAuthoringSettings current)
         {
+            RecoverGeneratedSettings();
             var entries = new List<DefinitionEntry>();
             foreach (var settings in UIAuthoringSettings.All)
             {
@@ -353,10 +362,116 @@ namespace AlloyFramework.Editor
             entries.Sort((left, right) =>
                 string.CompareOrdinal(left.Settings.UIName, right.Settings.UIName));
             File.WriteAllText(DefinitionPath,
-                BuildDefinitions(current.ScriptNamespace, entries), new UTF8Encoding(false));
+                BuildDefinitionRegistry(current.ScriptNamespace, entries), new UTF8Encoding(false));
+            File.WriteAllText(PropertiesPath,
+                BuildDefinitionProperties(current.ScriptNamespace, entries), new UTF8Encoding(false));
+            DeleteLegacyDefinitionFile();
         }
 
-        private static string BuildDefinitions(
+        private static void DeleteLegacyDefinitionFile()
+        {
+            if (!File.Exists(LegacyDefinitionPath))
+            {
+                return;
+            }
+
+            File.Delete(LegacyDefinitionPath);
+            var metaPath = LegacyDefinitionPath + ".meta";
+            if (File.Exists(metaPath))
+            {
+                File.Delete(metaPath);
+            }
+        }
+
+        internal static void RecoverGeneratedSettings()
+        {
+            var hasRecovered = false;
+            var prefabGuids = AssetDatabase.FindAssets(
+                "t:Prefab",
+                new[] { "Assets/Res/Prefabs/UI" });
+            for (var index = 0; index < prefabGuids.Length; index++)
+            {
+                var prefabPath = AssetDatabase.GUIDToAssetPath(prefabGuids[index]);
+                var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath);
+                if (prefab == null || prefab.GetComponentInChildren<UIRoot>(true) != null)
+                {
+                    continue;
+                }
+
+                var view = prefab.GetComponent<UIView>();
+                if (view == null)
+                {
+                    continue;
+                }
+
+                var settings = UIAuthoringSettings.LoadOrCreate(prefabPath);
+                if (settings.HasGenerated)
+                {
+                    continue;
+                }
+
+                var viewType = view.GetType();
+                settings.UIName = prefab.name;
+                settings.ScriptNamespace = viewType.Namespace;
+                settings.ViewFolder = GetScriptFolder(
+                    viewType.Name,
+                    settings.ViewFolder);
+                settings.ControllerFolder = GetScriptFolder(
+                    prefab.name + "Controller",
+                    settings.ControllerFolder);
+                settings.MarkGenerated();
+                hasRecovered = true;
+                Debug.LogWarning($"已恢复丢失的 UI 生成记录：{prefabPath}");
+            }
+
+            if (hasRecovered)
+            {
+                UIAuthoringSettings.Save();
+            }
+        }
+
+        private static string GetScriptFolder(string typeName, string fallbackFolder)
+        {
+            var scriptGuids = AssetDatabase.FindAssets($"{typeName} t:MonoScript");
+            for (var index = 0; index < scriptGuids.Length; index++)
+            {
+                var scriptPath = AssetDatabase.GUIDToAssetPath(scriptGuids[index]);
+                if (!string.Equals(
+                        Path.GetFileNameWithoutExtension(scriptPath),
+                        typeName,
+                        StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                return Path.GetDirectoryName(scriptPath)?.Replace('\\', '/') ?? fallbackFolder;
+            }
+
+            return fallbackFolder;
+        }
+
+        private static string BuildDefinitionRegistry(
+            string scriptNamespace,
+            IReadOnlyList<DefinitionEntry> entries)
+        {
+            var source = new StringBuilder();
+            source.AppendLine("// <auto-generated />");
+            source.AppendLine("// 由 AlloyFramework UI 生成器生成，请勿手动修改。");
+            source.AppendLine("using System.Collections.Generic;");
+            source.AppendLine("using AlloyFramework.UI;");
+            source.AppendLine();
+            source.AppendLine($"namespace {scriptNamespace}");
+            source.AppendLine("{");
+            source.AppendLine("    public static partial class GameUI");
+            source.AppendLine("    {");
+            AppendDefinitionRegistry(source);
+            AppendDefinitionInitialization(source, entries);
+            source.AppendLine("    }");
+            source.AppendLine("}");
+            return source.ToString();
+        }
+
+        private static string BuildDefinitionProperties(
             string scriptNamespace,
             IReadOnlyList<DefinitionEntry> entries)
         {
@@ -367,35 +482,24 @@ namespace AlloyFramework.Editor
             source.AppendLine();
             source.AppendLine($"namespace {scriptNamespace}");
             source.AppendLine("{");
-            source.AppendLine("    public static class GameUI");
+            source.AppendLine("    public static partial class GameUI");
             source.AppendLine("    {");
-            AppendDefinitionFields(source, entries);
             AppendDefinitionProperties(source, entries);
-            AppendDefinitionProvider(source, entries);
             source.AppendLine("    }");
             source.AppendLine("}");
             return source.ToString();
         }
 
-        private static void AppendDefinitionFields(
-            StringBuilder source,
-            IReadOnlyList<DefinitionEntry> entries)
+        private static void AppendDefinitionRegistry(StringBuilder source)
         {
-            for (var index = 0; index < entries.Count; index++)
-            {
-                var entry = entries[index];
-                var uiName = entry.Settings.UIName;
-                source.AppendLine(
-                    $"        private static UIDefinition<{entry.ViewName}, {entry.ControllerName}> " +
-                    $"m_{ToCamelCase(uiName)}; // {uiName} 的延迟创建缓存。");
-            }
-
-            source.AppendLine();
+            source.AppendLine(
+                "        private static readonly Dictionary<string, UIDefinition> m_definitions =");
+            source.AppendLine("            CreateDefinitions(); // 生成的全部 UI 定义。");
             source.AppendLine("        /// <summary>");
-            source.AppendLine("        /// 按名称延迟解析业务界面定义的提供器。");
+            source.AppendLine("        /// 按名称查询业务 UI 定义的提供器。");
             source.AppendLine("        /// </summary>");
             source.AppendLine("        public static IUIDefinitionProvider DefinitionProvider { get; } =");
-            source.AppendLine("            new GeneratedDefinitionProvider();");
+            source.AppendLine("            new UIDefinitionDictionaryProvider(m_definitions);");
         }
 
         private static void AppendDefinitionProperties(
@@ -406,210 +510,79 @@ namespace AlloyFramework.Editor
             {
                 var entry = entries[index];
                 var settings = entry.Settings;
-                var fieldName = $"m_{ToCamelCase(settings.UIName)}";
                 source.AppendLine();
                 source.AppendLine("        /// <summary>");
                 source.AppendLine($"        /// {settings.UIName} 的静态界面定义。");
                 source.AppendLine("        /// </summary>");
                 source.AppendLine(
                     $"        public static UIDefinition<{entry.ViewName}, {entry.ControllerName}> " +
-                    $"{settings.UIName}");
-                source.AppendLine("        {");
-                source.AppendLine("            get");
-                source.AppendLine("            {");
-                source.AppendLine($"                if ({fieldName} == null)");
-                source.AppendLine("                {");
-                source.AppendLine($"                    {fieldName} = Create{settings.UIName}();");
-                source.AppendLine("                }");
-                source.AppendLine();
-                source.AppendLine($"                return {fieldName};");
-                source.AppendLine("            }");
-                source.AppendLine("        }");
-                AppendDefinitionFactory(source, entry);
+                    $"{settings.UIName} =>");
+                source.AppendLine(
+                    $"            (UIDefinition<{entry.ViewName}, {entry.ControllerName}>)" +
+                    $"m_definitions[\"{settings.UIName}\"];");
             }
         }
 
-        private static void AppendDefinitionFactory(StringBuilder source, DefinitionEntry entry)
+        private static void AppendDefinitionInitialization(
+            StringBuilder source,
+            IReadOnlyList<DefinitionEntry> entries)
+        {
+            source.AppendLine();
+            source.AppendLine("        private static Dictionary<string, UIDefinition> CreateDefinitions()");
+            source.AppendLine("        {");
+            source.AppendLine(
+                $"            var definitions = new Dictionary<string, UIDefinition>({entries.Count});");
+            var chunkCount = (entries.Count + DEFINITIONCHUNKSIZE - 1) / DEFINITIONCHUNKSIZE;
+            for (var chunkIndex = 0; chunkIndex < chunkCount; chunkIndex++)
+            {
+                source.AppendLine($"            AddDefinitions{chunkIndex}(definitions);");
+            }
+            source.AppendLine("            return definitions;");
+            source.AppendLine("        }");
+            for (var chunkIndex = 0; chunkIndex < chunkCount; chunkIndex++)
+            {
+                source.AppendLine();
+                source.AppendLine(
+                    $"        private static void AddDefinitions{chunkIndex}(" +
+                    "Dictionary<string, UIDefinition> definitions)");
+                source.AppendLine("        {");
+                var startIndex = chunkIndex * DEFINITIONCHUNKSIZE;
+                var endIndex = Math.Min(startIndex + DEFINITIONCHUNKSIZE, entries.Count);
+                for (var index = startIndex; index < endIndex; index++)
+                {
+                    AppendDefinitionRegistration(source, entries[index]);
+                }
+                source.AppendLine("        }");
+            }
+        }
+
+        private static void AppendDefinitionRegistration(
+            StringBuilder source,
+            DefinitionEntry entry)
         {
             var settings = entry.Settings;
-            source.AppendLine();
+            source.AppendLine($"            // 注册 {settings.UIName} 的静态界面定义。");
+            source.AppendLine("            definitions.Add(");
+            source.AppendLine($"                \"{settings.UIName}\",");
             source.AppendLine(
-                $"        private static UIDefinition<{entry.ViewName}, {entry.ControllerName}> " +
-                $"Create{settings.UIName}()");
-            source.AppendLine("        {");
-            source.AppendLine(
-                $"            return new UIDefinitionBuilder<{entry.ViewName}, {entry.ControllerName}>(" +
+                $"                new UIDefinitionBuilder<{entry.ViewName}, {entry.ControllerName}>(" +
                 $"\"{settings.UIName}\")");
-            source.AppendLine($"                .Location(\"{Escape(entry.Location)}\")");
-            source.AppendLine($"                .Layer(UILayer.{settings.Layer})");
-            source.AppendLine($"                .Layout(UILayoutMode.{settings.Layout})");
-            source.AppendLine($"                .Background(UIBackgroundMode.{settings.Background})");
-            source.AppendLine($"                .Input(UIInputMode.{settings.Input})");
-            source.AppendLine($"                .Cache(UICacheMode.{settings.Cache})");
-            source.AppendLine($"                .OpenMode(UIOpenMode.{settings.OpenMode})");
-            source.AppendLine($"                .Navigation(UINavigationMode.{settings.Navigation})");
+            source.AppendLine($"                    .Location(\"{Escape(entry.Location)}\")");
+            source.AppendLine($"                    .Layer(UILayer.{settings.Layer})");
+            source.AppendLine($"                    .Layout(UILayoutMode.{settings.Layout})");
+            source.AppendLine($"                    .Background(UIBackgroundMode.{settings.Background})");
+            source.AppendLine($"                    .Input(UIInputMode.{settings.Input})");
+            source.AppendLine($"                    .Cache(UICacheMode.{settings.Cache})");
+            source.AppendLine($"                    .OpenMode(UIOpenMode.{settings.OpenMode})");
+            source.AppendLine($"                    .Navigation(UINavigationMode.{settings.Navigation})");
             source.AppendLine(
-                $"                .PauseCovered({(settings.PauseCovered ? "true" : "false")})");
-            source.AppendLine("                .Build();");
-            source.AppendLine("        }");
-        }
-
-        private static void AppendDefinitionProvider(
-            StringBuilder source,
-            IReadOnlyList<DefinitionEntry> entries)
-        {
-            var buckets = BuildDefinitionBuckets(entries);
+                $"                    .PauseCovered({(settings.PauseCovered ? "true" : "false")})");
+            source.AppendLine("                    .Build());");
             source.AppendLine();
-            source.AppendLine("        private sealed class GeneratedDefinitionProvider : IUIDefinitionProvider");
-            source.AppendLine("        {");
-            source.AppendLine(
-                "            private const int DEFINITIONBUCKETCOUNT = 64; // 生成定义查找方法的固定分桶数。");
-            source.AppendLine();
-            source.AppendLine("            /// <summary>");
-            source.AppendLine("            /// 判断是否包含指定的稳定 UI 名称，但不创建界面定义。");
-            source.AppendLine("            /// </summary>");
-            source.AppendLine("            /// <param name=\"uiName\">界面的稳定名称。</param>");
-            source.AppendLine("            /// <returns>包含该名称时返回 true，否则返回 false。</returns>");
-            source.AppendLine("            public bool Contains(string uiName)");
-            source.AppendLine("            {");
-            source.AppendLine("                switch (CalculateBucket(uiName))");
-            source.AppendLine("                {");
-            foreach (var bucket in buckets)
-            {
-                source.AppendLine($"                    case {bucket.Key}:");
-                source.AppendLine($"                        return ContainsBucket{bucket.Key}(uiName);");
-            }
-            source.AppendLine("                    default:");
-            source.AppendLine("                        return false;");
-            source.AppendLine("                }");
-            source.AppendLine("            }");
-            source.AppendLine();
-            source.AppendLine("            /// <summary>");
-            source.AppendLine("            /// 尝试按稳定 UI 名称取得延迟创建的界面定义。");
-            source.AppendLine("            /// </summary>");
-            source.AppendLine("            /// <param name=\"uiName\">界面的稳定名称。</param>");
-            source.AppendLine("            /// <param name=\"definition\">成功时返回对应界面定义。</param>");
-            source.AppendLine("            /// <returns>能够解析名称时返回 true，否则返回 false。</returns>");
-            source.AppendLine(
-                "            public bool TryGetDefinition(string uiName, out UIDefinition definition)");
-            source.AppendLine("            {");
-            source.AppendLine("                switch (CalculateBucket(uiName))");
-            source.AppendLine("                {");
-            foreach (var bucket in buckets)
-            {
-                source.AppendLine($"                    case {bucket.Key}:");
-                source.AppendLine(
-                    $"                        return TryGetBucket{bucket.Key}(uiName, out definition);");
-            }
-            source.AppendLine("                    default:");
-            source.AppendLine("                        definition = null;");
-            source.AppendLine("                        return false;");
-            source.AppendLine("                }");
-            source.AppendLine("            }");
-            AppendDefinitionBucketMethods(source, buckets);
-            source.AppendLine();
-            source.AppendLine("            private static int CalculateBucket(string uiName)");
-            source.AppendLine("            {");
-            source.AppendLine("                if (string.IsNullOrEmpty(uiName))");
-            source.AppendLine("                {");
-            source.AppendLine("                    return -1;");
-            source.AppendLine("                }");
-            source.AppendLine();
-            source.AppendLine("                unchecked");
-            source.AppendLine("                {");
-            source.AppendLine("                    uint hash = 2166136261;");
-            source.AppendLine("                    for (var index = 0; index < uiName.Length; index++)");
-            source.AppendLine("                    {");
-            source.AppendLine("                        hash ^= uiName[index];");
-            source.AppendLine("                        hash *= 16777619;");
-            source.AppendLine("                    }");
-            source.AppendLine();
-            source.AppendLine("                    return (int)(hash & (DEFINITIONBUCKETCOUNT - 1));");
-            source.AppendLine("                }");
-            source.AppendLine("            }");
-            source.AppendLine("        }");
-        }
-
-        private static void AppendDefinitionBucketMethods(
-            StringBuilder source,
-            SortedDictionary<int, List<DefinitionEntry>> buckets)
-        {
-            foreach (var bucket in buckets)
-            {
-                source.AppendLine();
-                source.AppendLine($"            private static bool ContainsBucket{bucket.Key}(string uiName)");
-                source.AppendLine("            {");
-                source.AppendLine("                switch (uiName)");
-                source.AppendLine("                {");
-                foreach (var entry in bucket.Value)
-                {
-                    source.AppendLine($"                    case \"{entry.Settings.UIName}\":");
-                    source.AppendLine("                        return true;");
-                }
-                source.AppendLine("                    default:");
-                source.AppendLine("                        return false;");
-                source.AppendLine("                }");
-                source.AppendLine("            }");
-                source.AppendLine();
-                source.AppendLine(
-                    $"            private static bool TryGetBucket{bucket.Key}(" +
-                    "string uiName, out UIDefinition definition)");
-                source.AppendLine("            {");
-                source.AppendLine("                switch (uiName)");
-                source.AppendLine("                {");
-                foreach (var entry in bucket.Value)
-                {
-                    source.AppendLine($"                    case \"{entry.Settings.UIName}\":");
-                    source.AppendLine($"                        definition = {entry.Settings.UIName};");
-                    source.AppendLine("                        return true;");
-                }
-                source.AppendLine("                    default:");
-                source.AppendLine("                        definition = null;");
-                source.AppendLine("                        return false;");
-                source.AppendLine("                }");
-                source.AppendLine("            }");
-            }
-        }
-
-        private static SortedDictionary<int, List<DefinitionEntry>> BuildDefinitionBuckets(
-            IReadOnlyList<DefinitionEntry> entries)
-        {
-            var buckets = new SortedDictionary<int, List<DefinitionEntry>>();
-            for (var index = 0; index < entries.Count; index++)
-            {
-                var entry = entries[index];
-                var bucket = CalculateStableHash(entry.Settings.UIName) & 63;
-                if (!buckets.TryGetValue(bucket, out var bucketEntries))
-                {
-                    bucketEntries = new List<DefinitionEntry>();
-                    buckets.Add(bucket, bucketEntries);
-                }
-
-                bucketEntries.Add(entry);
-            }
-
-            return buckets;
-        }
-
-        private static int CalculateStableHash(string value)
-        {
-            unchecked
-            {
-                uint hash = 2166136261;
-                for (var index = 0; index < value.Length; index++)
-                {
-                    hash ^= value[index];
-                    hash *= 16777619;
-                }
-
-                return (int)hash;
-            }
         }
 
         private static string Escape(string value) =>
             value.Replace("\\", "\\\\").Replace("\"", "\\\"");
 
-        private static string ToCamelCase(string value) =>
-            char.ToLowerInvariant(value[0]) + value.Substring(1);
     }
 }

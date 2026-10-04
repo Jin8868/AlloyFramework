@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using UnityEditor;
 using UnityEngine;
 
@@ -44,10 +45,29 @@ namespace AlloyFramework.Editor
             return settings;
         }
 
+        /// <summary>
+        /// 加载 UI 生成配置数据库；仅在磁盘上确实不存在资源时创建新数据库。
+        /// </summary>
+        /// <returns>可供 UI 生成工具读写的配置数据库。</returns>
         public static UIAuthoringDatabase LoadOrCreate()
         {
             var database = AssetDatabase.LoadAssetAtPath<UIAuthoringDatabase>(AssetPath);
-            if (database != null) return database;
+            if (database != null)
+            {
+                return database;
+            }
+
+            // 脚本域重载期间资源仍在导入，LoadAssetAtPath 可能暂时返回 null。
+            var assetGuid = AssetDatabase.AssetPathToGUID(AssetPath);
+            var projectFolder = Directory.GetParent(Application.dataPath)?.FullName;
+            var fullPath = string.IsNullOrEmpty(projectFolder)
+                ? string.Empty
+                : Path.Combine(projectFolder, AssetPath);
+            if (!string.IsNullOrEmpty(assetGuid) || File.Exists(fullPath))
+            {
+                throw new InvalidOperationException(
+                    $"UI 生成配置正在导入，请稍后重试：{AssetPath}");
+            }
 
             EnsureSettingsFolder();
             database = CreateInstance<UIAuthoringDatabase>();

@@ -34,11 +34,29 @@ namespace AlloyFramework.Editor
 
         private void OnEnable()
         {
-            RefreshPrefabs();
-            if (m_prefab != null && m_settings == null) SelectPrefab(m_prefab);
+            EditorApplication.delayCall += Initialize;
         }
 
-        private void OnDisable() => SaveSettings();
+        private void OnDisable()
+        {
+            EditorApplication.delayCall -= Initialize;
+            SaveSettings();
+        }
+
+        private void Initialize()
+        {
+            if (this == null)
+            {
+                return;
+            }
+
+            RefreshPrefabs();
+            if (m_prefab != null && m_settings == null)
+            {
+                SelectPrefab(m_prefab);
+            }
+            Repaint();
+        }
 
         private void OnGUI()
         {
@@ -183,6 +201,7 @@ namespace AlloyFramework.Editor
 
         private void RefreshPrefabs()
         {
+            UIAuthoringGenerator.RecoverGeneratedSettings();
             m_prefabs.Clear();
             foreach (var guid in AssetDatabase.FindAssets("t:Prefab", new[] { "Assets/Res/Prefabs/UI" }))
             {
