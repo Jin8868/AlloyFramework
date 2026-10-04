@@ -23,7 +23,7 @@ namespace AlloyFramework.Editor
             public UnityEngine.Object Reference;
         }
 
-        [MenuItem("AlloyFramework/UI/校验全部界面绑定", false, 102)]
+        [MenuItem("★AlloyFramework★/UI/校验全部界面绑定", false, 102)]
         private static void ValidateAll()
         {
             var failures = new List<string>();
