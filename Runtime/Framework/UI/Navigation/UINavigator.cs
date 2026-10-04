@@ -126,11 +126,6 @@ namespace AlloyFramework.UI
                 throw new KeyNotFoundException($"未找到 UI 跳转配置：JumpID={jumpID}。");
             }
 
-            if (config.JumpMode == EUIJumpMode.Replace)
-            {
-                throw new NotSupportedException($"UI 跳转暂不支持 Replace：JumpID={jumpID}。");
-            }
-
             if (!m_manager.TryGetDefinition(config.TargetUIName, out var targetDefinition))
             {
                 throw new InvalidOperationException(
