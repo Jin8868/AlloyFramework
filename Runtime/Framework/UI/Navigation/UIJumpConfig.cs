@@ -1,6 +1,6 @@
 namespace AlloyFramework.UI
 {
-    public enum EUIJumpMode { Overlay, Push, Replace }
+    public enum EUIJumpMode { Overlay, Push }
 
     public enum EUIBackMode { ReturnToSource, InheritSource, Explicit, Disabled }
 
