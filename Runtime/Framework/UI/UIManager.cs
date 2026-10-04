@@ -12,6 +12,8 @@ namespace AlloyFramework.UI
         private readonly Dictionary<string, UIDefinition> m_definitions =
             new Dictionary<string, UIDefinition>(StringComparer.Ordinal);
         private readonly List<UIEntry> m_entries = new List<UIEntry>();
+        private UINavigator m_navigator; // 配置驱动的 UI 导航器。
+        private IUIDefinitionProvider m_definitionProvider; // 业务安装的懒加载 UI 定义提供器。
         private CancellationTokenSource m_shutdown;
         private IInstanceHandle m_rootInstance;
         private UIRoot m_root;
@@ -39,6 +41,7 @@ namespace AlloyFramework.UI
                     throw new InvalidOperationException($"UIRoot component is missing from {UISettings.RootLocation}.");
                 m_root.Initialize(m_rootInstance.Instance);
                 UnityEngine.Object.DontDestroyOnLoad(m_rootInstance.Instance);
+                m_navigator = new UINavigator(this);
                 Instance = this;
                 FrameworkStartupLog.Step("校验并启用 UI 根节点", validationStartedAt);
             }
@@ -57,13 +60,16 @@ namespace AlloyFramework.UI
         {
             if (ReferenceEquals(Instance, this)) Instance = null;
             m_shutdown?.Cancel();
+            m_navigator?.Clear();
             var snapshot = m_entries.ToArray();
             foreach (var entry in snapshot) Release(entry);
             m_entries.Clear();
             m_definitions.Clear();
+            m_definitionProvider = null;
             m_rootInstance?.Dispose();
             m_rootInstance = null;
             m_root = null;
+            m_navigator = null;
             m_shutdown?.Dispose();
             m_shutdown = null;
         }
@@ -78,6 +84,110 @@ namespace AlloyFramework.UI
                 return;
             }
             m_definitions.Add(definition.UIName, definition);
+        }
+
+        /// <summary>
+        /// 安装业务提供的 UI 跳转配置并立即校验所有静态引用。
+        /// </summary>
+        /// <param name="provider">UI 跳转配置提供器。</param>
+        public void ConfigureNavigation(IUIJumpConfigProvider provider)
+        {
+            EnsureReady();
+            m_navigator.Configure(provider);
+        }
+
+        /// <summary>
+        /// 安装按名称延迟解析业务 UI 定义的提供器。
+        /// </summary>
+        /// <param name="provider">业务 UI 定义提供器。</param>
+        public void SetDefinitionProvider(IUIDefinitionProvider provider)
+        {
+            EnsureReady();
+            m_definitionProvider = provider ?? throw new ArgumentNullException(nameof(provider));
+        }
+
+        /// <summary>
+        /// 尝试按稳定 UI 名称取得已注册的界面定义。
+        /// </summary>
+        /// <param name="uiName">界面的稳定名称。</param>
+        /// <param name="definition">成功时返回对应界面定义。</param>
+        /// <returns>找到定义时返回 true，否则返回 false。</returns>
+        public bool TryGetDefinition(string uiName, out UIDefinition definition)
+        {
+            if (m_definitions.TryGetValue(uiName, out definition))
+            {
+                return true;
+            }
+
+            if (m_definitionProvider == null ||
+                !m_definitionProvider.TryGetDefinition(uiName, out definition) ||
+                definition == null)
+            {
+                definition = null;
+                return false;
+            }
+
+            Register(definition);
+            return true;
+        }
+
+        /// <summary>
+        /// 根据跳转配置 ID 打开目标界面。
+        /// </summary>
+        /// <param name="jumpID">跳转配置的唯一标识。</param>
+        /// <param name="prepareHandler">本次跳转特有的数据准备方法。</param>
+        /// <param name="data">调用方传入的原始业务数据。</param>
+        /// <param name="cancellationToken">用于取消本次跳转的令牌。</param>
+        /// <returns>目标界面的运行时句柄。</returns>
+        public UniTask<UIHandle> JumpAsync(
+            int jumpID,
+            UIJumpPrepareHandler prepareHandler = null,
+            object data = null,
+            CancellationToken cancellationToken = default)
+        {
+            EnsureReady();
+            return m_navigator.JumpAsync(jumpID, prepareHandler, data, cancellationToken);
+        }
+
+        /// <summary>
+        /// 根据跳转配置 ID 打开目标界面并通过回调返回结果。
+        /// </summary>
+        /// <param name="jumpID">跳转配置的唯一标识。</param>
+        /// <param name="prepareHandler">本次跳转特有的数据准备方法。</param>
+        /// <param name="data">调用方传入的原始业务数据。</param>
+        /// <param name="onCompleted">跳转完成后的结果回调。</param>
+        /// <param name="cancellationToken">用于取消本次跳转的令牌。</param>
+        public void Jump(
+            int jumpID,
+            UIJumpPrepareHandler prepareHandler = null,
+            object data = null,
+            Action<UIHandle, Exception> onCompleted = null,
+            CancellationToken cancellationToken = default)
+        {
+            UICallbacks.Run(JumpAsync(jumpID, prepareHandler, data, cancellationToken), onCompleted);
+        }
+
+        /// <summary>
+        /// 按最近一次已提交的导航记录返回。
+        /// </summary>
+        /// <param name="cancellationToken">用于取消本次返回的令牌。</param>
+        /// <returns>成功执行返回时为 true，没有可返回记录时为 false。</returns>
+        public UniTask<bool> BackAsync(CancellationToken cancellationToken = default)
+        {
+            EnsureReady();
+            return m_navigator.BackAsync(cancellationToken);
+        }
+
+        /// <summary>
+        /// 按最近一次已提交的导航记录返回并通过回调报告结果。
+        /// </summary>
+        /// <param name="onCompleted">返回完成后的结果回调。</param>
+        /// <param name="cancellationToken">用于取消本次返回的令牌。</param>
+        public void Back(
+            Action<bool, Exception> onCompleted = null,
+            CancellationToken cancellationToken = default)
+        {
+            UICallbacks.Run(BackAsync(cancellationToken), onCompleted);
         }
 
         public async UniTask<UIHandle<TController>> OpenAsync<TView, TController, TData>(
@@ -191,17 +301,18 @@ namespace AlloyFramework.UI
         public async UniTask CloseAllAsync()
         {
             EnsureReady();
+            m_navigator.ClearRecords();
             var snapshot = m_entries.ToArray();
             foreach (var entry in snapshot)
                 if (entry.State != UIState.Cached) await CloseEntryAsync(entry);
         }
 
         public void Close(string uiName, Action<Exception> onCompleted = null) =>
-            UICallbacks.Run(() => CloseAsync(uiName), onCompleted);
+            UICallbacks.Run(CloseAsync(uiName), onCompleted);
         public void Close(UIDefinition definition, Action<Exception> onCompleted = null) =>
-            UICallbacks.Run(() => CloseAsync(definition), onCompleted);
+            UICallbacks.Run(CloseAsync(definition), onCompleted);
         public void Close(UIHandle handle, Action<Exception> onCompleted = null) =>
-            UICallbacks.Run(() => CloseAsync(handle), onCompleted);
+            UICallbacks.Run(CloseAsync(handle), onCompleted);
         public void CloseAll(Action<Exception> onCompleted = null) =>
             UICallbacks.Run(CloseAllAsync, onCompleted);
 
@@ -242,6 +353,77 @@ namespace AlloyFramework.UI
             return best?.Handle;
         }
 
+        internal UIHandle CurrentHandle
+        {
+            get
+            {
+                for (var index = m_entries.Count - 1; index >= 0; index--)
+                {
+                    var entry = m_entries[index];
+                    if (entry.State == UIState.Active && entry.Handle != null)
+                    {
+                        return entry.Handle;
+                    }
+                }
+
+                return null;
+            }
+        }
+
+        internal bool ContainsDefinition(string uiName)
+        {
+            return m_definitions.ContainsKey(uiName) ||
+                   m_definitionProvider != null && m_definitionProvider.Contains(uiName);
+        }
+
+        internal UniTask<UIHandle> OpenDefinitionAsync(
+            UIDefinition definition,
+            object data,
+            int jumpID,
+            CancellationToken cancellationToken)
+        {
+            if (definition == null)
+            {
+                throw new ArgumentNullException(nameof(definition));
+            }
+
+            var normalizedData = NormalizeData(definition, data, jumpID);
+            return definition.OpenAsync(this, normalizedData, cancellationToken);
+        }
+
+        internal void Pause(UIHandle handle)
+        {
+            var entry = FindByHandle(handle);
+            if (entry == null || entry.State != UIState.Active)
+            {
+                return;
+            }
+
+            var canvasGroup = entry.Instance.Instance.GetComponent<CanvasGroup>();
+            canvasGroup.alpha = 0f;
+            canvasGroup.interactable = false;
+            canvasGroup.blocksRaycasts = false;
+            SetState(entry, UIState.Paused);
+            entry.Controller.Pause();
+        }
+
+        internal void Resume(UIHandle handle)
+        {
+            var entry = FindByHandle(handle);
+            if (entry == null || entry.State != UIState.Paused)
+            {
+                return;
+            }
+
+            var canvasGroup = entry.Instance.Instance.GetComponent<CanvasGroup>();
+            canvasGroup.alpha = 1f;
+            canvasGroup.interactable = entry.Definition.InputMode != UIInputMode.PassThrough;
+            canvasGroup.blocksRaycasts = entry.Definition.InputMode != UIInputMode.PassThrough;
+            SetState(entry, UIState.Active);
+            entry.Controller.Resume();
+            BringToFront(entry);
+        }
+
         private async UniTask<UIHandle<TController>> OpenEntryAsync<TController>(UIEntry entry, object data)
             where TController : UIController
         {
@@ -261,7 +443,11 @@ namespace AlloyFramework.UI
                 var gameObject = entry.Instance.Instance;
                 entry.View = gameObject.GetComponent(entry.Definition.ViewType) as UIView;
                 if (entry.View == null)
-                    throw new InvalidOperationException($"UI {entry.Definition.UIName} is missing {entry.Definition.ViewType.Name} on the prefab root.");
+                {
+                    throw new InvalidOperationException(
+                        $"UI {entry.Definition.UIName} is missing " +
+                        $"{entry.Definition.ViewType.Name} on the prefab root.");
+                }
                 entry.Controller = entry.Definition.CreateController();
                 entry.Controller.UIName = entry.Definition.UIName;
                 entry.Controller.State = entry.State;
@@ -281,7 +467,7 @@ namespace AlloyFramework.UI
             canvasGroup.blocksRaycasts = false;
 
             var handle = new UIHandle<TController>(++m_nextInstanceId, entry.Definition.UIName,
-                (TController)entry.Controller, CloseAsync, () => entry.State);
+                (TController)entry.Controller, CloseAsync, entry);
             entry.Handle = handle;
             entry.Controller.SetHandle(handle);
             if (!entry.Created)
@@ -350,6 +536,7 @@ namespace AlloyFramework.UI
                     controller.EndCloseAnimation();
                 }
                 entry.Handle?.Invalidate();
+                m_navigator?.OnClosed(entry.Handle);
                 entry.Handle = null;
                 controller?.SetHandle(null);
                 if (entry.Definition.CacheMode == UICacheMode.DestroyOnClose)
@@ -387,6 +574,53 @@ namespace AlloyFramework.UI
                     return entry;
             }
             return null;
+        }
+
+        private UIEntry FindByHandle(UIHandle handle)
+        {
+            if (handle == null)
+            {
+                return null;
+            }
+
+            foreach (var entry in m_entries)
+            {
+                if (ReferenceEquals(entry.Handle, handle))
+                {
+                    return entry;
+                }
+            }
+
+            return null;
+        }
+
+        private static object NormalizeData(UIDefinition definition, object data, int jumpID)
+        {
+            if (definition.DataType == typeof(UIEmptyData) && data == null)
+            {
+                return default(UIEmptyData);
+            }
+
+            if (data == null)
+            {
+                if (definition.DataType.IsValueType)
+                {
+                    throw new InvalidOperationException(
+                        $"UI 跳转数据为空：JumpID={jumpID}，UIName={definition.UIName}，" +
+                        $"Expected={definition.DataType.FullName}。");
+                }
+
+                return null;
+            }
+
+            if (!definition.DataType.IsInstanceOfType(data))
+            {
+                throw new InvalidOperationException(
+                    $"UI 跳转数据类型错误：JumpID={jumpID}，UIName={definition.UIName}，" +
+                    $"Expected={definition.DataType.FullName}，Actual={data.GetType().FullName}。");
+            }
+
+            return data;
         }
 
         private static void BringToFront(UIEntry entry) =>

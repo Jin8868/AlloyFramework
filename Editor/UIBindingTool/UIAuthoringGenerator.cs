@@ -356,7 +356,8 @@ namespace AlloyFramework.Editor
                 BuildDefinitions(current.ScriptNamespace, entries), new UTF8Encoding(false));
         }
 
-        private static string BuildDefinitions(string scriptNamespace,
+        private static string BuildDefinitions(
+            string scriptNamespace,
             IReadOnlyList<DefinitionEntry> entries)
         {
             var source = new StringBuilder();
@@ -368,33 +369,247 @@ namespace AlloyFramework.Editor
             source.AppendLine("{");
             source.AppendLine("    public static class GameUI");
             source.AppendLine("    {");
-            for (var index = 0; index < entries.Count; index++)
-            {
-                var entry = entries[index];
-                var settings = entry.Settings;
-                source.AppendLine(
-                    $"        public static readonly UIDefinition<{entry.ViewName}, {entry.ControllerName}> {settings.UIName} =");
-                source.AppendLine(
-                    $"            new UIDefinitionBuilder<{entry.ViewName}, {entry.ControllerName}>(\"{settings.UIName}\")");
-                source.AppendLine($"                .Location(\"{Escape(entry.Location)}\")");
-                source.AppendLine($"                .Layer(UILayer.{settings.Layer})");
-                source.AppendLine($"                .Layout(UILayoutMode.{settings.Layout})");
-                source.AppendLine($"                .Background(UIBackgroundMode.{settings.Background})");
-                source.AppendLine($"                .Input(UIInputMode.{settings.Input})");
-                source.AppendLine($"                .Cache(UICacheMode.{settings.Cache})");
-                source.AppendLine($"                .OpenMode(UIOpenMode.{settings.OpenMode})");
-                source.AppendLine($"                .Navigation(UINavigationMode.{settings.Navigation})");
-                source.AppendLine(
-                    $"                .PauseCovered({(settings.PauseCovered ? "true" : "false")})");
-                source.AppendLine("                .Build();");
-                if (index < entries.Count - 1) source.AppendLine();
-            }
+            AppendDefinitionFields(source, entries);
+            AppendDefinitionProperties(source, entries);
+            AppendDefinitionProvider(source, entries);
             source.AppendLine("    }");
             source.AppendLine("}");
             return source.ToString();
         }
 
+        private static void AppendDefinitionFields(
+            StringBuilder source,
+            IReadOnlyList<DefinitionEntry> entries)
+        {
+            for (var index = 0; index < entries.Count; index++)
+            {
+                var entry = entries[index];
+                var uiName = entry.Settings.UIName;
+                source.AppendLine(
+                    $"        private static UIDefinition<{entry.ViewName}, {entry.ControllerName}> " +
+                    $"m_{ToCamelCase(uiName)}; // {uiName} 的延迟创建缓存。");
+            }
+
+            source.AppendLine();
+            source.AppendLine("        /// <summary>");
+            source.AppendLine("        /// 按名称延迟解析业务界面定义的提供器。");
+            source.AppendLine("        /// </summary>");
+            source.AppendLine("        public static IUIDefinitionProvider DefinitionProvider { get; } =");
+            source.AppendLine("            new GeneratedDefinitionProvider();");
+        }
+
+        private static void AppendDefinitionProperties(
+            StringBuilder source,
+            IReadOnlyList<DefinitionEntry> entries)
+        {
+            for (var index = 0; index < entries.Count; index++)
+            {
+                var entry = entries[index];
+                var settings = entry.Settings;
+                var fieldName = $"m_{ToCamelCase(settings.UIName)}";
+                source.AppendLine();
+                source.AppendLine("        /// <summary>");
+                source.AppendLine($"        /// {settings.UIName} 的静态界面定义。");
+                source.AppendLine("        /// </summary>");
+                source.AppendLine(
+                    $"        public static UIDefinition<{entry.ViewName}, {entry.ControllerName}> " +
+                    $"{settings.UIName}");
+                source.AppendLine("        {");
+                source.AppendLine("            get");
+                source.AppendLine("            {");
+                source.AppendLine($"                if ({fieldName} == null)");
+                source.AppendLine("                {");
+                source.AppendLine($"                    {fieldName} = Create{settings.UIName}();");
+                source.AppendLine("                }");
+                source.AppendLine();
+                source.AppendLine($"                return {fieldName};");
+                source.AppendLine("            }");
+                source.AppendLine("        }");
+                AppendDefinitionFactory(source, entry);
+            }
+        }
+
+        private static void AppendDefinitionFactory(StringBuilder source, DefinitionEntry entry)
+        {
+            var settings = entry.Settings;
+            source.AppendLine();
+            source.AppendLine(
+                $"        private static UIDefinition<{entry.ViewName}, {entry.ControllerName}> " +
+                $"Create{settings.UIName}()");
+            source.AppendLine("        {");
+            source.AppendLine(
+                $"            return new UIDefinitionBuilder<{entry.ViewName}, {entry.ControllerName}>(" +
+                $"\"{settings.UIName}\")");
+            source.AppendLine($"                .Location(\"{Escape(entry.Location)}\")");
+            source.AppendLine($"                .Layer(UILayer.{settings.Layer})");
+            source.AppendLine($"                .Layout(UILayoutMode.{settings.Layout})");
+            source.AppendLine($"                .Background(UIBackgroundMode.{settings.Background})");
+            source.AppendLine($"                .Input(UIInputMode.{settings.Input})");
+            source.AppendLine($"                .Cache(UICacheMode.{settings.Cache})");
+            source.AppendLine($"                .OpenMode(UIOpenMode.{settings.OpenMode})");
+            source.AppendLine($"                .Navigation(UINavigationMode.{settings.Navigation})");
+            source.AppendLine(
+                $"                .PauseCovered({(settings.PauseCovered ? "true" : "false")})");
+            source.AppendLine("                .Build();");
+            source.AppendLine("        }");
+        }
+
+        private static void AppendDefinitionProvider(
+            StringBuilder source,
+            IReadOnlyList<DefinitionEntry> entries)
+        {
+            var buckets = BuildDefinitionBuckets(entries);
+            source.AppendLine();
+            source.AppendLine("        private sealed class GeneratedDefinitionProvider : IUIDefinitionProvider");
+            source.AppendLine("        {");
+            source.AppendLine(
+                "            private const int DEFINITIONBUCKETCOUNT = 64; // 生成定义查找方法的固定分桶数。");
+            source.AppendLine();
+            source.AppendLine("            /// <summary>");
+            source.AppendLine("            /// 判断是否包含指定的稳定 UI 名称，但不创建界面定义。");
+            source.AppendLine("            /// </summary>");
+            source.AppendLine("            /// <param name=\"uiName\">界面的稳定名称。</param>");
+            source.AppendLine("            /// <returns>包含该名称时返回 true，否则返回 false。</returns>");
+            source.AppendLine("            public bool Contains(string uiName)");
+            source.AppendLine("            {");
+            source.AppendLine("                switch (CalculateBucket(uiName))");
+            source.AppendLine("                {");
+            foreach (var bucket in buckets)
+            {
+                source.AppendLine($"                    case {bucket.Key}:");
+                source.AppendLine($"                        return ContainsBucket{bucket.Key}(uiName);");
+            }
+            source.AppendLine("                    default:");
+            source.AppendLine("                        return false;");
+            source.AppendLine("                }");
+            source.AppendLine("            }");
+            source.AppendLine();
+            source.AppendLine("            /// <summary>");
+            source.AppendLine("            /// 尝试按稳定 UI 名称取得延迟创建的界面定义。");
+            source.AppendLine("            /// </summary>");
+            source.AppendLine("            /// <param name=\"uiName\">界面的稳定名称。</param>");
+            source.AppendLine("            /// <param name=\"definition\">成功时返回对应界面定义。</param>");
+            source.AppendLine("            /// <returns>能够解析名称时返回 true，否则返回 false。</returns>");
+            source.AppendLine(
+                "            public bool TryGetDefinition(string uiName, out UIDefinition definition)");
+            source.AppendLine("            {");
+            source.AppendLine("                switch (CalculateBucket(uiName))");
+            source.AppendLine("                {");
+            foreach (var bucket in buckets)
+            {
+                source.AppendLine($"                    case {bucket.Key}:");
+                source.AppendLine(
+                    $"                        return TryGetBucket{bucket.Key}(uiName, out definition);");
+            }
+            source.AppendLine("                    default:");
+            source.AppendLine("                        definition = null;");
+            source.AppendLine("                        return false;");
+            source.AppendLine("                }");
+            source.AppendLine("            }");
+            AppendDefinitionBucketMethods(source, buckets);
+            source.AppendLine();
+            source.AppendLine("            private static int CalculateBucket(string uiName)");
+            source.AppendLine("            {");
+            source.AppendLine("                if (string.IsNullOrEmpty(uiName))");
+            source.AppendLine("                {");
+            source.AppendLine("                    return -1;");
+            source.AppendLine("                }");
+            source.AppendLine();
+            source.AppendLine("                unchecked");
+            source.AppendLine("                {");
+            source.AppendLine("                    uint hash = 2166136261;");
+            source.AppendLine("                    for (var index = 0; index < uiName.Length; index++)");
+            source.AppendLine("                    {");
+            source.AppendLine("                        hash ^= uiName[index];");
+            source.AppendLine("                        hash *= 16777619;");
+            source.AppendLine("                    }");
+            source.AppendLine();
+            source.AppendLine("                    return (int)(hash & (DEFINITIONBUCKETCOUNT - 1));");
+            source.AppendLine("                }");
+            source.AppendLine("            }");
+            source.AppendLine("        }");
+        }
+
+        private static void AppendDefinitionBucketMethods(
+            StringBuilder source,
+            SortedDictionary<int, List<DefinitionEntry>> buckets)
+        {
+            foreach (var bucket in buckets)
+            {
+                source.AppendLine();
+                source.AppendLine($"            private static bool ContainsBucket{bucket.Key}(string uiName)");
+                source.AppendLine("            {");
+                source.AppendLine("                switch (uiName)");
+                source.AppendLine("                {");
+                foreach (var entry in bucket.Value)
+                {
+                    source.AppendLine($"                    case \"{entry.Settings.UIName}\":");
+                    source.AppendLine("                        return true;");
+                }
+                source.AppendLine("                    default:");
+                source.AppendLine("                        return false;");
+                source.AppendLine("                }");
+                source.AppendLine("            }");
+                source.AppendLine();
+                source.AppendLine(
+                    $"            private static bool TryGetBucket{bucket.Key}(" +
+                    "string uiName, out UIDefinition definition)");
+                source.AppendLine("            {");
+                source.AppendLine("                switch (uiName)");
+                source.AppendLine("                {");
+                foreach (var entry in bucket.Value)
+                {
+                    source.AppendLine($"                    case \"{entry.Settings.UIName}\":");
+                    source.AppendLine($"                        definition = {entry.Settings.UIName};");
+                    source.AppendLine("                        return true;");
+                }
+                source.AppendLine("                    default:");
+                source.AppendLine("                        definition = null;");
+                source.AppendLine("                        return false;");
+                source.AppendLine("                }");
+                source.AppendLine("            }");
+            }
+        }
+
+        private static SortedDictionary<int, List<DefinitionEntry>> BuildDefinitionBuckets(
+            IReadOnlyList<DefinitionEntry> entries)
+        {
+            var buckets = new SortedDictionary<int, List<DefinitionEntry>>();
+            for (var index = 0; index < entries.Count; index++)
+            {
+                var entry = entries[index];
+                var bucket = CalculateStableHash(entry.Settings.UIName) & 63;
+                if (!buckets.TryGetValue(bucket, out var bucketEntries))
+                {
+                    bucketEntries = new List<DefinitionEntry>();
+                    buckets.Add(bucket, bucketEntries);
+                }
+
+                bucketEntries.Add(entry);
+            }
+
+            return buckets;
+        }
+
+        private static int CalculateStableHash(string value)
+        {
+            unchecked
+            {
+                uint hash = 2166136261;
+                for (var index = 0; index < value.Length; index++)
+                {
+                    hash ^= value[index];
+                    hash *= 16777619;
+                }
+
+                return (int)hash;
+            }
+        }
+
         private static string Escape(string value) =>
             value.Replace("\\", "\\\\").Replace("\"", "\\\"");
+
+        private static string ToCamelCase(string value) =>
+            char.ToLowerInvariant(value[0]) + value.Substring(1);
     }
 }

@@ -1,5 +1,7 @@
 using System;
+using System.Threading;
 using AlloyFramework.UI;
+using Cysharp.Threading.Tasks;
 
 namespace AlloyFramework.UI
 {
@@ -42,6 +44,10 @@ namespace AlloyFramework.UI
         internal abstract Type ControllerType { get; }
         internal abstract Type DataType { get; }
         internal abstract UIController CreateController();
+        internal abstract UniTask<UIHandle> OpenAsync(
+            UIManager manager,
+            object data,
+            CancellationToken cancellationToken);
     }
 }
 
@@ -61,6 +67,14 @@ namespace AlloyFramework.UI
         internal override Type ControllerType => typeof(TController);
         internal override Type DataType => typeof(TData);
         internal override UIController CreateController() => new TController();
+
+        internal override async UniTask<UIHandle> OpenAsync(
+            UIManager manager,
+            object data,
+            CancellationToken cancellationToken)
+        {
+            return await manager.OpenAsync(this, (TData)data, cancellationToken);
+        }
     }
 
     public sealed class UIDefinition<TView, TController> : UIDefinition<TView, TController, UIEmptyData>
