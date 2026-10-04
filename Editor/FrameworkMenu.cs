@@ -39,6 +39,7 @@ namespace AlloyFramework.Editor
         [MenuItem(MenuRoot + "配置表", false, 1)]
         private static void OpenConfigTable()
         {
+            ConfigTableWindow.OpenWindow();
         }
     }
 }
