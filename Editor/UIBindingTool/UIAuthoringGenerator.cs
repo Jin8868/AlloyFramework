@@ -30,6 +30,25 @@ namespace AlloyFramework.Editor
             public string ViewTypeName;
         }
 
+        [Serializable]
+        private sealed class PendingGenerationBatch
+        {
+            [SerializeField] private List<PendingGeneration> m_items =
+                new List<PendingGeneration>(); // 等待回写的 UI 列表。
+
+            public List<PendingGeneration> Items => m_items;
+        }
+
+        private sealed class GenerationRequest
+        {
+            public UIAuthoringSettings Settings;
+            public GameObject Prefab;
+            public string ViewName;
+            public string ControllerName;
+            public string ViewPath;
+            public string ControllerPath;
+        }
+
         private sealed class DefinitionEntry
         {
             public UIAuthoringSettings Settings;
@@ -62,56 +81,57 @@ namespace AlloyFramework.Editor
 
         internal static void Generate(UIAuthoringSettings settings)
         {
+            Generate(new[] { settings });
+        }
+
+        internal static void Generate(IReadOnlyList<UIAuthoringSettings> settingsCollection)
+        {
             if (EditorApplication.isPlayingOrWillChangePlaymode)
                 throw new InvalidOperationException("请先退出运行模式。");
             if (!string.IsNullOrEmpty(SessionState.GetString(PendingKey, string.Empty)))
                 throw new InvalidOperationException("上一个 UI 正在等待脚本编译，请稍后再生成。");
 
-            var prefabPath = AssetDatabase.GUIDToAssetPath(settings.PrefabGuid);
-            var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath);
-            if (prefab == null ||
-                !prefabPath.StartsWith("Assets/Res/Prefabs/UI/", StringComparison.Ordinal))
-                throw new InvalidOperationException("请选择 Assets/Res/Prefabs/UI 内的业务 UI 预制体。");
-            if (prefab.GetComponentInChildren<UIRoot>(true) != null)
-                throw new InvalidOperationException("UIRoot 是框架预制体，不能生成业务 View。");
+            var requests = CreateGenerationRequests(settingsCollection);
 
-            ValidateIdentifier(settings.UIName, "UI 名称");
-            foreach (var segment in settings.ScriptNamespace.Split('.'))
-                ValidateIdentifier(segment, "命名空间");
-            var viewFolder = ValidateFolder(settings.ViewFolder, "View 文件夹");
-            var controllerFolder = ValidateFolder(settings.ControllerFolder, "Controller 文件夹");
-            ValidateUniqueName(settings);
-
-            var viewName = settings.UIName + "View";
-            var controllerName = settings.UIName + "Controller";
-            var viewPath = $"{viewFolder}/{viewName}.cs";
-            var controllerPath = $"{controllerFolder}/{controllerName}.cs";
-            var existingViews = prefab.GetComponents<UIView>();
-            if (existingViews.Length > 1 || existingViews.Length == 1 &&
-                existingViews[0].GetType().FullName != settings.ScriptNamespace + "." + viewName)
-                throw new InvalidOperationException(
-                    "预制体根节点已有不同的 UIView，请先检查；生成器不会删除组件。");
-
+            // 全部校验通过后才写入文件，避免批量操作只生成一部分 UI。
             EnsureWritableGeneratedFile(DefinitionPath);
             EnsureWritableGeneratedFile(PropertiesPath);
             EnsureWritableGeneratedFile(LegacyDefinitionPath);
-            Directory.CreateDirectory(viewFolder);
-            Directory.CreateDirectory(controllerFolder);
             Directory.CreateDirectory(Path.GetDirectoryName(DefinitionPath) ?? string.Empty);
-            UIBindingGenerator.GenerateViewSource(
-                prefab, settings.ScriptNamespace, viewName, viewPath);
-            WriteIfMissing(controllerPath,
-                BuildController(settings.ScriptNamespace, viewName, controllerName));
-            WriteDefinitions(settings);
+            for (var index = 0; index < requests.Count; index++)
+            {
+                var request = requests[index];
+                Directory.CreateDirectory(Path.GetDirectoryName(request.ViewPath) ?? string.Empty);
+                Directory.CreateDirectory(Path.GetDirectoryName(request.ControllerPath) ?? string.Empty);
+                UIBindingGenerator.GenerateViewSource(
+                    request.Prefab,
+                    request.Settings.ScriptNamespace,
+                    request.ViewName,
+                    request.ViewPath);
+                WriteIfMissing(
+                    request.ControllerPath,
+                    BuildController(
+                        request.Settings.ScriptNamespace,
+                        request.ViewName,
+                        request.ControllerName));
+            }
+
+            WriteDefinitions(requests);
             UIAuthoringSettings.Save();
 
-            var pending = new PendingGeneration
+            var pendingBatch = new PendingGenerationBatch();
+            for (var index = 0; index < requests.Count; index++)
             {
-                PrefabGuid = settings.PrefabGuid,
-                ViewPath = viewPath,
-                ViewTypeName = settings.ScriptNamespace + "." + viewName
-            };
-            SessionState.SetString(PendingKey, JsonUtility.ToJson(pending));
+                var request = requests[index];
+                pendingBatch.Items.Add(new PendingGeneration
+                {
+                    PrefabGuid = request.Settings.PrefabGuid,
+                    ViewPath = request.ViewPath,
+                    ViewTypeName = request.Settings.ScriptNamespace + "." + request.ViewName
+                });
+            }
+
+            SessionState.SetString(PendingKey, JsonUtility.ToJson(pendingBatch));
             s_generatedInThisDomain = true;
             AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
             EditorApplication.delayCall += FinishPending;
@@ -136,51 +156,272 @@ namespace AlloyFramework.Editor
             if (string.IsNullOrEmpty(json) || EditorApplication.isCompiling || EditorApplication.isUpdating)
                 return;
 
-            var pending = JsonUtility.FromJson<PendingGeneration>(json);
-            var script = AssetDatabase.LoadAssetAtPath<MonoScript>(pending.ViewPath);
-            var viewType = script != null ? script.GetClass() : null;
-            if (viewType == null)
+            var pendingGenerations = GetPendingGenerations(json);
+            var viewTypes = new List<Type>(pendingGenerations.Count);
+            for (var index = 0; index < pendingGenerations.Count; index++)
             {
-                if (!s_generatedInThisDomain)
+                var pending = pendingGenerations[index];
+                var script = AssetDatabase.LoadAssetAtPath<MonoScript>(pending.ViewPath);
+                var viewType = script != null ? script.GetClass() : null;
+                if (viewType == null)
                 {
-                    SessionState.SetString(PendingKey, string.Empty);
-                    Debug.LogError($"未找到 View 类型 {pending.ViewTypeName}，请检查脚本后重新生成。");
+                    if (!s_generatedInThisDomain)
+                    {
+                        SessionState.SetString(PendingKey, string.Empty);
+                        Debug.LogError($"未找到 View 类型 {pending.ViewTypeName}，请检查脚本后重新生成。");
+                    }
+
+                    return;
                 }
-                return;
+
+                viewTypes.Add(viewType);
             }
 
-            try
+            var successCount = 0;
+            var failureCount = 0;
+            for (var index = 0; index < pendingGenerations.Count; index++)
             {
-                if (viewType.FullName != pending.ViewTypeName || viewType.IsAbstract ||
-                    !typeof(UIView).IsAssignableFrom(viewType))
-                    throw new InvalidOperationException(
-                        $"{pending.ViewPath} 必须声明 {pending.ViewTypeName} : UIView。");
-
-                var prefabPath = AssetDatabase.GUIDToAssetPath(pending.PrefabGuid);
-                var root = PrefabUtility.LoadPrefabContents(prefabPath);
                 try
                 {
-                    var views = root.GetComponents<UIView>();
-                    if (views.Length > 1 || views.Length == 1 && views[0].GetType() != viewType)
-                        throw new InvalidOperationException(
-                            "预制体根节点已有不同的 UIView，生成器未修改预制体。");
-                    if (views.Length == 0) root.AddComponent(viewType);
-                    PrefabUtility.SaveAsPrefabAsset(root, prefabPath);
+                    ApplyPendingGeneration(pendingGenerations[index], viewTypes[index]);
+                    successCount++;
                 }
-                finally { PrefabUtility.UnloadPrefabContents(root); }
+                catch (Exception exception)
+                {
+                    failureCount++;
+                    Debug.LogException(exception);
+                }
+            }
 
-                UIBindingGenerator.ApplyBindings(prefabPath);
-                var settings = UIAuthoringSettings.TryLoad(pending.PrefabGuid);
-                settings?.MarkGenerated();
-                UIAuthoringSettings.Save();
-                SessionState.SetString(PendingKey, string.Empty);
-                Debug.Log($"UI 已生成并写入强类型绑定：{prefabPath}");
-            }
-            catch (Exception exception)
+            SessionState.SetString(PendingKey, string.Empty);
+            UIAuthoringSettings.Save();
+            if (failureCount == 0)
             {
-                SessionState.SetString(PendingKey, string.Empty);
-                Debug.LogException(exception);
+                Debug.Log($"已生成并写入 {successCount} 个 UI 的强类型绑定。");
             }
+            else
+            {
+                Debug.LogError($"UI 批量生成完成：成功 {successCount} 个，失败 {failureCount} 个。");
+            }
+        }
+
+        private static List<GenerationRequest> CreateGenerationRequests(
+            IReadOnlyList<UIAuthoringSettings> settingsCollection)
+        {
+            if (settingsCollection == null || settingsCollection.Count == 0)
+            {
+                throw new InvalidOperationException("请至少选择一个 UI 预制体。");
+            }
+
+            RecoverGeneratedSettings();
+            var requests = new List<GenerationRequest>(settingsCollection.Count);
+            var prefabGuids = new HashSet<string>(StringComparer.Ordinal);
+            var scriptNamespace = string.Empty;
+            for (var index = 0; index < settingsCollection.Count; index++)
+            {
+                var request = CreateGenerationRequest(settingsCollection[index]);
+                if (!prefabGuids.Add(request.Settings.PrefabGuid))
+                {
+                    throw new InvalidOperationException(
+                        $"UI {request.Settings.UIName} 被重复加入本次生成。");
+                }
+
+                if (string.IsNullOrEmpty(scriptNamespace))
+                {
+                    scriptNamespace = request.Settings.ScriptNamespace;
+                }
+                else if (!string.Equals(
+                             scriptNamespace,
+                             request.Settings.ScriptNamespace,
+                             StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException(
+                        "统一的 GameUI 要求批量生成的界面使用同一个业务命名空间。");
+                }
+
+                requests.Add(request);
+            }
+
+            ValidateGeneratedDefinitionsNamespace(scriptNamespace, prefabGuids);
+            return requests;
+        }
+
+        private static GenerationRequest CreateGenerationRequest(UIAuthoringSettings settings)
+        {
+            if (settings == null)
+            {
+                throw new InvalidOperationException("存在无效的 UI 生成配置。");
+            }
+
+            var prefabPath = AssetDatabase.GUIDToAssetPath(settings.PrefabGuid);
+            var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath);
+            if (prefab == null ||
+                !prefabPath.StartsWith("Assets/Res/Prefabs/UI/", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("请选择 Assets/Res/Prefabs/UI 内的业务 UI 预制体。");
+            }
+
+            if (prefab.GetComponentInChildren<UIRoot>(true) != null)
+            {
+                throw new InvalidOperationException("UIRoot 是框架预制体，不能生成业务 View。");
+            }
+
+            ValidateIdentifier(settings.UIName, "UI 名称");
+            var namespaceSegments = settings.ScriptNamespace.Split('.');
+            for (var index = 0; index < namespaceSegments.Length; index++)
+            {
+                ValidateIdentifier(namespaceSegments[index], "命名空间");
+            }
+
+            var viewFolder = ValidateFolder(settings.ViewFolder, "View 文件夹");
+            var controllerFolder = ValidateFolder(settings.ControllerFolder, "Controller 文件夹");
+            ValidateUniqueName(settings);
+
+            var viewName = settings.UIName + "View";
+            var controllerName = settings.UIName + "Controller";
+            var existingViews = prefab.GetComponents<UIView>();
+            if (existingViews.Length > 1 || existingViews.Length == 1 &&
+                existingViews[0].GetType().FullName != settings.ScriptNamespace + "." + viewName)
+            {
+                throw new InvalidOperationException(
+                    "预制体根节点已有不同的 UIView，请先检查；生成器不会删除组件。");
+            }
+
+            return new GenerationRequest
+            {
+                Settings = settings,
+                Prefab = prefab,
+                ViewName = viewName,
+                ControllerName = controllerName,
+                ViewPath = $"{viewFolder}/{viewName}.cs",
+                ControllerPath = $"{controllerFolder}/{controllerName}.cs"
+            };
+        }
+
+        private static void ValidateGeneratedDefinitionsNamespace(
+            string scriptNamespace,
+            ISet<string> pendingPrefabGuids)
+        {
+            foreach (var settings in UIAuthoringSettings.All)
+            {
+                if (settings == null ||
+                    !settings.HasGenerated && !pendingPrefabGuids.Contains(settings.PrefabGuid))
+                {
+                    continue;
+                }
+
+                if (!string.Equals(settings.ScriptNamespace, scriptNamespace, StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException(
+                        $"统一的 GameUI 要求所有界面使用命名空间 {scriptNamespace}；" +
+                        $"{settings.UIName} 当前使用 {settings.ScriptNamespace}。");
+                }
+            }
+        }
+
+        private static List<PendingGeneration> GetPendingGenerations(string json)
+        {
+            var pendingBatch = JsonUtility.FromJson<PendingGenerationBatch>(json);
+            if (pendingBatch != null && pendingBatch.Items != null && pendingBatch.Items.Count > 0)
+            {
+                return pendingBatch.Items;
+            }
+
+            var legacyPending = JsonUtility.FromJson<PendingGeneration>(json);
+            if (legacyPending != null && !string.IsNullOrEmpty(legacyPending.PrefabGuid))
+            {
+                return new List<PendingGeneration> { legacyPending };
+            }
+
+            throw new InvalidOperationException("UI 生成等待记录无效，请重新生成。");
+        }
+
+        private static void ApplyPendingGeneration(PendingGeneration pending, Type viewType)
+        {
+            if (viewType.FullName != pending.ViewTypeName || viewType.IsAbstract ||
+                !typeof(UIView).IsAssignableFrom(viewType))
+            {
+                throw new InvalidOperationException(
+                    $"{pending.ViewPath} 必须声明 {pending.ViewTypeName} : UIView。");
+            }
+
+            var prefabPath = AssetDatabase.GUIDToAssetPath(pending.PrefabGuid);
+            var root = PrefabUtility.LoadPrefabContents(prefabPath);
+            try
+            {
+                var views = root.GetComponents<UIView>();
+                if (views.Length > 1 || views.Length == 1 && views[0].GetType() != viewType)
+                {
+                    throw new InvalidOperationException(
+                        "预制体根节点已有不同的 UIView，生成器未修改预制体。");
+                }
+
+                if (views.Length == 0)
+                {
+                    root.AddComponent(viewType);
+                }
+
+                PrefabUtility.SaveAsPrefabAsset(root, prefabPath);
+            }
+            finally
+            {
+                PrefabUtility.UnloadPrefabContents(root);
+            }
+
+            UIBindingGenerator.ApplyBindings(prefabPath);
+            var settings = UIAuthoringSettings.TryLoad(pending.PrefabGuid);
+            settings?.MarkGenerated();
+        }
+
+        private static void WriteDefinitions(IReadOnlyList<GenerationRequest> requests)
+        {
+            var scriptNamespace = requests[0].Settings.ScriptNamespace;
+            var pendingPrefabGuids = new HashSet<string>(StringComparer.Ordinal);
+            for (var index = 0; index < requests.Count; index++)
+            {
+                pendingPrefabGuids.Add(requests[index].Settings.PrefabGuid);
+            }
+
+            RecoverGeneratedSettings();
+            var entries = new List<DefinitionEntry>();
+            foreach (var settings in UIAuthoringSettings.All)
+            {
+                if (settings == null ||
+                    !settings.HasGenerated && !pendingPrefabGuids.Contains(settings.PrefabGuid))
+                {
+                    continue;
+                }
+
+                var prefabPath = AssetDatabase.GUIDToAssetPath(settings.PrefabGuid);
+                if (string.IsNullOrEmpty(prefabPath) ||
+                    !prefabPath.StartsWith("Assets/Res/", StringComparison.Ordinal) ||
+                    !prefabPath.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidOperationException($"UI {settings.UIName} 对应的预制体不存在。");
+                }
+
+                var location = prefabPath.Substring("Assets/Res/".Length);
+                location = location.Substring(0, location.Length - ".prefab".Length);
+                entries.Add(new DefinitionEntry
+                {
+                    Settings = settings,
+                    Location = location,
+                    ViewName = settings.UIName + "View",
+                    ControllerName = settings.UIName + "Controller"
+                });
+            }
+
+            entries.Sort((left, right) =>
+                string.CompareOrdinal(left.Settings.UIName, right.Settings.UIName));
+            File.WriteAllText(
+                DefinitionPath,
+                BuildDefinitionRegistry(scriptNamespace, entries),
+                new UTF8Encoding(false));
+            File.WriteAllText(
+                PropertiesPath,
+                BuildDefinitionProperties(scriptNamespace, entries),
+                new UTF8Encoding(false));
+            DeleteLegacyDefinitionFile();
         }
 
         private static string ValidateFolder(string path, string label)
@@ -325,47 +566,6 @@ namespace AlloyFramework.Editor
             source.AppendLine("    }");
             source.AppendLine("}");
             return source.ToString();
-        }
-
-        private static void WriteDefinitions(UIAuthoringSettings current)
-        {
-            RecoverGeneratedSettings();
-            var entries = new List<DefinitionEntry>();
-            foreach (var settings in UIAuthoringSettings.All)
-            {
-                if (settings == null || !settings.HasGenerated &&
-                    settings.PrefabGuid != current.PrefabGuid)
-                    continue;
-                if (!string.Equals(settings.ScriptNamespace, current.ScriptNamespace,
-                        StringComparison.Ordinal))
-                    throw new InvalidOperationException(
-                        $"统一的 GameUI 要求所有界面使用命名空间 {current.ScriptNamespace}；" +
-                        $"{settings.UIName} 当前使用 {settings.ScriptNamespace}。");
-
-                var prefabPath = AssetDatabase.GUIDToAssetPath(settings.PrefabGuid);
-                if (string.IsNullOrEmpty(prefabPath) ||
-                    !prefabPath.StartsWith("Assets/Res/", StringComparison.Ordinal) ||
-                    !prefabPath.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase))
-                    throw new InvalidOperationException($"UI {settings.UIName} 对应的预制体不存在。");
-
-                var location = prefabPath.Substring("Assets/Res/".Length);
-                location = location.Substring(0, location.Length - ".prefab".Length);
-                entries.Add(new DefinitionEntry
-                {
-                    Settings = settings,
-                    Location = location,
-                    ViewName = settings.UIName + "View",
-                    ControllerName = settings.UIName + "Controller"
-                });
-            }
-
-            entries.Sort((left, right) =>
-                string.CompareOrdinal(left.Settings.UIName, right.Settings.UIName));
-            File.WriteAllText(DefinitionPath,
-                BuildDefinitionRegistry(current.ScriptNamespace, entries), new UTF8Encoding(false));
-            File.WriteAllText(PropertiesPath,
-                BuildDefinitionProperties(current.ScriptNamespace, entries), new UTF8Encoding(false));
-            DeleteLegacyDefinitionFile();
         }
 
         private static void DeleteLegacyDefinitionFile()

@@ -20,6 +20,8 @@ namespace AlloyFramework.Editor
         [SerializeField] private GameObject m_prefab;
         [NonSerialized] private UIAuthoringSettings m_settings;
         [SerializeField] private string m_search = string.Empty;
+        [SerializeField] private List<string> m_selectedPrefabGuids =
+            new List<string>(); // 批量生成时选中的预制体 GUID。
         private readonly List<PrefabItem> m_prefabs = new List<PrefabItem>();
         private Vector2 m_listScroll;
         private Vector2 m_detailScroll;
@@ -63,6 +65,7 @@ namespace AlloyFramework.Editor
             EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
             GUILayout.Label("UI 生成器", EditorStyles.boldLabel);
             GUILayout.FlexibleSpace();
+            GUILayout.Label($"已选 {GetSelectedPrefabCount()} 个", EditorStyles.miniLabel);
             GUILayout.Label($"业务预制体 {m_prefabs.Count} 个", EditorStyles.miniLabel);
             EditorGUILayout.EndHorizontal();
             EditorGUILayout.BeginHorizontal();
@@ -79,6 +82,18 @@ namespace AlloyFramework.Editor
                 GUI.skin.FindStyle("ToolbarSeachTextField") ?? EditorStyles.textField);
             if (GUILayout.Button("刷新", EditorStyles.toolbarButton, GUILayout.Width(44))) RefreshPrefabs();
             EditorGUILayout.EndHorizontal();
+            EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
+            if (GUILayout.Button("全选筛选项", EditorStyles.toolbarButton))
+            {
+                SelectVisiblePrefabs();
+            }
+
+            if (GUILayout.Button("清空选择", EditorStyles.toolbarButton))
+            {
+                ClearPrefabSelection();
+            }
+
+            EditorGUILayout.EndHorizontal();
             m_listScroll = EditorGUILayout.BeginScrollView(m_listScroll);
             var itemButton = new GUIStyle(GUI.skin.button)
             {
@@ -87,14 +102,29 @@ namespace AlloyFramework.Editor
             };
             foreach (var item in m_prefabs)
             {
-                if (!string.IsNullOrEmpty(m_search) &&
-                    item.Path.IndexOf(m_search, StringComparison.OrdinalIgnoreCase) < 0 &&
-                    item.Prefab.name.IndexOf(m_search, StringComparison.OrdinalIgnoreCase) < 0)
+                if (!MatchesSearch(item))
                     continue;
                 var previousColor = GUI.backgroundColor;
-                if (item.Prefab == m_prefab) GUI.backgroundColor = new Color(0.54f, 0.77f, 1f);
+                if (IsPrefabSelected(item.Guid))
+                {
+                    GUI.backgroundColor = new Color(0.56f, 0.84f, 0.63f);
+                }
+                else if (item.Prefab == m_prefab)
+                {
+                    GUI.backgroundColor = new Color(0.54f, 0.77f, 1f);
+                }
+
                 EditorGUILayout.BeginVertical(EditorStyles.helpBox);
+                EditorGUILayout.BeginHorizontal();
+                var isSelected = IsPrefabSelected(item.Guid);
+                var selected = GUILayout.Toggle(isSelected, GUIContent.none, GUILayout.Width(18f));
+                if (selected != isSelected)
+                {
+                    SetPrefabSelected(item.Guid, selected);
+                }
+
                 if (GUILayout.Button(item.Prefab.name, itemButton)) SelectPrefab(item.Prefab);
+                EditorGUILayout.EndHorizontal();
                 GUI.backgroundColor = previousColor;
                 EditorGUILayout.LabelField(item.Path, EditorStyles.miniLabel);
                 var layer = item.Settings != null ? item.Settings.Layer.ToString() : "未配置";
@@ -111,6 +141,7 @@ namespace AlloyFramework.Editor
             EditorGUILayout.BeginVertical();
             m_detailScroll = EditorGUILayout.BeginScrollView(m_detailScroll);
             EditorGUILayout.Space(8);
+            DrawBatchGenerateAction();
             EditorGUILayout.LabelField("界面配置", EditorStyles.boldLabel);
             var prefab = (GameObject)EditorGUILayout.ObjectField("UI 预制体", m_prefab,
                 typeof(GameObject), false);
@@ -179,6 +210,68 @@ namespace AlloyFramework.Editor
             }
         }
 
+        private void DrawBatchGenerateAction()
+        {
+            var selectedCount = GetSelectedPrefabCount();
+            using (new EditorGUI.DisabledScope(selectedCount == 0))
+            {
+                if (GUILayout.Button($"生成选中项（{selectedCount}）", GUILayout.Height(30f)))
+                {
+                    GenerateSelected();
+                }
+            }
+
+            EditorGUILayout.Space(8);
+        }
+
+        private void GenerateSelected()
+        {
+            SaveSettings();
+            var settingsCollection = new List<UIAuthoringSettings>();
+            try
+            {
+                // 选中但尚未打开过详情的预制体，也按默认规则创建生成配置。
+                for (var index = 0; index < m_prefabs.Count; index++)
+                {
+                    var item = m_prefabs[index];
+                    if (!IsPrefabSelected(item.Guid))
+                    {
+                        continue;
+                    }
+
+                    var settings = UIAuthoringSettings.LoadOrCreate(item.Path);
+                    item.Settings = settings;
+                    settingsCollection.Add(settings);
+                }
+
+                if (settingsCollection.Count == 0)
+                {
+                    ShowNotification(new GUIContent("请先勾选需要生成的 UI。"));
+                    return;
+                }
+
+                UIAuthoringSettings.Save();
+                AssetDatabase.ImportAsset(
+                    UIAuthoringDatabase.AssetPath,
+                    ImportAssetOptions.ForceUpdate);
+                for (var index = 0; index < settingsCollection.Count; index++)
+                {
+                    var settings = settingsCollection[index];
+                    settingsCollection[index] = UIAuthoringSettings.TryLoad(settings.PrefabGuid);
+                }
+
+                UIAuthoringGenerator.Generate(settingsCollection);
+                RefreshPrefabs();
+                ShowNotification(
+                    new GUIContent($"已提交 {settingsCollection.Count} 个 UI，编译完成后自动绑定预制体。"));
+            }
+            catch (Exception exception)
+            {
+                Debug.LogException(exception);
+                EditorUtility.DisplayDialog("UI 批量生成失败", exception.Message, "确定");
+            }
+        }
+
         private void SelectPrefab(GameObject prefab)
         {
             SaveSettings();
@@ -215,6 +308,87 @@ namespace AlloyFramework.Editor
                 });
             }
             m_prefabs.Sort((left, right) => string.Compare(left.Path, right.Path, StringComparison.Ordinal));
+            RemoveMissingPrefabSelections();
+        }
+
+        private bool MatchesSearch(PrefabItem item)
+        {
+            return string.IsNullOrEmpty(m_search) ||
+                   item.Path.IndexOf(m_search, StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   item.Prefab.name.IndexOf(m_search, StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private void SelectVisiblePrefabs()
+        {
+            for (var index = 0; index < m_prefabs.Count; index++)
+            {
+                var item = m_prefabs[index];
+                if (MatchesSearch(item))
+                {
+                    SetPrefabSelected(item.Guid, true);
+                }
+            }
+        }
+
+        private void ClearPrefabSelection()
+        {
+            m_selectedPrefabGuids.Clear();
+        }
+
+        private bool IsPrefabSelected(string prefabGuid)
+        {
+            return m_selectedPrefabGuids.Contains(prefabGuid);
+        }
+
+        private void SetPrefabSelected(string prefabGuid, bool isSelected)
+        {
+            if (isSelected)
+            {
+                if (!m_selectedPrefabGuids.Contains(prefabGuid))
+                {
+                    m_selectedPrefabGuids.Add(prefabGuid);
+                }
+
+                return;
+            }
+
+            m_selectedPrefabGuids.Remove(prefabGuid);
+        }
+
+        private int GetSelectedPrefabCount()
+        {
+            var count = 0;
+            for (var index = 0; index < m_prefabs.Count; index++)
+            {
+                if (IsPrefabSelected(m_prefabs[index].Guid))
+                {
+                    count++;
+                }
+            }
+
+            return count;
+        }
+
+        private void RemoveMissingPrefabSelections()
+        {
+            for (var index = m_selectedPrefabGuids.Count - 1; index >= 0; index--)
+            {
+                var prefabGuid = m_selectedPrefabGuids[index];
+                var containsPrefab = false;
+                for (var prefabIndex = 0; prefabIndex < m_prefabs.Count; prefabIndex++)
+                {
+                    if (m_prefabs[prefabIndex].Guid == prefabGuid)
+                    {
+                        containsPrefab = true;
+                        break;
+                    }
+                }
+
+                if (!containsPrefab)
+                {
+                    m_selectedPrefabGuids.RemoveAt(index);
+                }
+            }
         }
 
         private static string GetLocation(string path)
