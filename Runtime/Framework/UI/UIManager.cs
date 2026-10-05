@@ -249,7 +249,16 @@ namespace AlloyFramework.UI
             {
                 entry.Opening?.TrySetException(exception);
                 entry.Opening = null;
-                Release(entry);
+                if (entry.CloseRequested)
+                {
+                    entry.Lifetime?.Dispose();
+                    entry.Lifetime = null;
+                }
+                else
+                {
+                    Release(entry);
+                }
+
                 throw;
             }
         }
@@ -400,7 +409,6 @@ namespace AlloyFramework.UI
             }
 
             var canvasGroup = entry.Instance.Instance.GetComponent<CanvasGroup>();
-            canvasGroup.alpha = 0f;
             canvasGroup.interactable = false;
             canvasGroup.blocksRaycasts = false;
             SetState(entry, UIState.Paused);
@@ -416,7 +424,6 @@ namespace AlloyFramework.UI
             }
 
             var canvasGroup = entry.Instance.Instance.GetComponent<CanvasGroup>();
-            canvasGroup.alpha = 1f;
             canvasGroup.interactable = entry.Definition.InputMode != UIInputMode.PassThrough;
             canvasGroup.blocksRaycasts = entry.Definition.InputMode != UIInputMode.PassThrough;
             SetState(entry, UIState.Active);
@@ -462,7 +469,6 @@ namespace AlloyFramework.UI
             var canvasGroup = entry.Instance.Instance.GetComponent<CanvasGroup>();
             if (canvasGroup == null)
                 canvasGroup = entry.Instance.Instance.AddComponent<CanvasGroup>();
-            canvasGroup.alpha = 0f;
             canvasGroup.interactable = false;
             canvasGroup.blocksRaycasts = false;
 
@@ -480,14 +486,17 @@ namespace AlloyFramework.UI
             await entry.Controller.PrepareAsync(data, token);
             token.ThrowIfCancellationRequested();
             entry.Controller.InitData(data);
+            entry.OpenLifecycleStarted = true;
+            entry.View.PrepareOpenAnimation();
             SetState(entry, UIState.Opening);
             EventSystem.Instance.SendEvent(UIEventNames.Opening, entry.Definition.UIName);
             entry.Controller.StartOpenAnimation();
-            await entry.Controller.PlayOpenAnimationAsync(token);
+            await UniTask.WhenAll(
+                entry.View.PlayOpenAnimationAsync(token),
+                entry.Controller.PlayOpenAnimationAsync(token));
             token.ThrowIfCancellationRequested();
             entry.Controller.EndOpenAnimation();
             token.ThrowIfCancellationRequested();
-            canvasGroup.alpha = 1f;
             canvasGroup.interactable = entry.Definition.InputMode != UIInputMode.PassThrough;
             canvasGroup.blocksRaycasts = entry.Definition.InputMode != UIInputMode.PassThrough;
             SetState(entry, UIState.Active);
@@ -508,15 +517,25 @@ namespace AlloyFramework.UI
                 await entry.Closing.Task;
                 return;
             }
-            if (entry.State == UIState.Loading || entry.State == UIState.Preparing ||
-                entry.State == UIState.Opening)
+            if (entry.Opening != null)
             {
+                entry.CloseRequested = true;
                 entry.Lifetime?.Cancel();
                 try { if (entry.Opening != null) await entry.Opening.Task; }
                 catch (Exception) { }
                 if (entry.State == UIState.Disposed || entry.State == UIState.Cached) return;
             }
 
+            if (entry.Instance == null || entry.Controller == null || entry.View == null ||
+                !entry.OpenLifecycleStarted)
+            {
+                Release(entry);
+                return;
+            }
+
+            entry.CloseRequested = false;
+            entry.Lifetime = CancellationTokenSource.CreateLinkedTokenSource(m_shutdown.Token);
+            var token = entry.Lifetime.Token;
             var completion = new UniTaskCompletionSource();
             entry.Closing = completion;
             SetState(entry, UIState.Closing);
@@ -524,15 +543,26 @@ namespace AlloyFramework.UI
             try
             {
                 var controller = entry.Controller;
-                if (entry.Opened)
+                var canvasGroup = entry.Instance?.Instance.GetComponent<CanvasGroup>();
+                if (canvasGroup != null)
+                {
+                    canvasGroup.interactable = false;
+                    canvasGroup.blocksRaycasts = false;
+                }
+
+                if (entry.OpenLifecycleStarted)
                 {
                     controller.Closed();
+                    entry.OpenLifecycleStarted = false;
                     entry.Opened = false;
                 }
                 if (controller != null)
                 {
                     controller.StartCloseAnimation();
-                    await controller.PlayCloseAnimationAsync();
+                    await UniTask.WhenAll(
+                        entry.View.PlayCloseAnimationAsync(token),
+                        controller.PlayCloseAnimationAsync(token));
+                    token.ThrowIfCancellationRequested();
                     controller.EndCloseAnimation();
                 }
                 entry.Handle?.Invalidate();

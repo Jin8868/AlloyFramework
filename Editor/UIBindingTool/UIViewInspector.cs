@@ -23,7 +23,7 @@ namespace AlloyFramework.Editor
                     "请打开 UI 预制体后刷新绑定，场景中的预制体实例不支持直接生成。",
                     MessageType.Info);
                 using (new EditorGUI.DisabledScope(true))
-                    GUILayout.Button("重新生成 View 绑定");
+                    GUILayout.Button("重新生成 View 绑定与动效 Key");
                 return;
             }
 
@@ -36,11 +36,11 @@ namespace AlloyFramework.Editor
                     "没有找到该界面的生成配置，请先通过 UI 生成器完成首次生成。",
                     MessageType.Warning);
                 using (new EditorGUI.DisabledScope(true))
-                    GUILayout.Button("重新生成 View 绑定");
+                    GUILayout.Button("重新生成 View 绑定与动效 Key");
                 return;
             }
 
-            if (!GUILayout.Button("重新生成 View 绑定", GUILayout.Height(28f))) return;
+            if (!GUILayout.Button("重新生成 View 绑定与动效 Key", GUILayout.Height(28f))) return;
 
             try
             {

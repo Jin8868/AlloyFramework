@@ -11,8 +11,10 @@ namespace AlloyFramework.Editor
 {
     internal static class UIBindingGenerator
     {
-        private const string BlockStart = "        // <alloy-generated-bindings>";
-        private const string BlockEnd = "        // </alloy-generated-bindings>";
+        private const string BLOCKSTART = "        // <alloy-generated-bindings>";
+        private const string BLOCKEND = "        // </alloy-generated-bindings>";
+        private const string ANIMATIONBLOCKSTART = "        // <alloy-generated-animation-keys>";
+        private const string ANIMATIONBLOCKEND = "        // </alloy-generated-animation-keys>";
 
         private sealed class BindingInfo
         {
@@ -42,27 +44,20 @@ namespace AlloyFramework.Editor
         internal static void GenerateViewSource(GameObject prefab, string scriptNamespace,
             string viewName, string viewPath)
         {
-            var block = BuildBindingBlock(Scan(prefab.transform));
+            var bindingBlock = BuildBindingBlock(Scan(prefab.transform));
+            var animationBlock = BuildAnimationKeyBlock(ScanAnimationKeys(prefab));
             Directory.CreateDirectory(Path.GetDirectoryName(viewPath) ?? string.Empty);
             if (!File.Exists(viewPath))
             {
-                File.WriteAllText(viewPath, BuildView(scriptNamespace, viewName, block),
+                File.WriteAllText(viewPath, BuildView(scriptNamespace, viewName, bindingBlock, animationBlock),
                     new UTF8Encoding(false));
                 return;
             }
 
             var source = File.ReadAllText(viewPath);
-            var start = source.IndexOf(BlockStart, StringComparison.Ordinal);
-            var end = source.IndexOf(BlockEnd, StringComparison.Ordinal);
-            if (start < 0 || end < 0 || end < start ||
-                source.IndexOf(BlockStart, start + BlockStart.Length, StringComparison.Ordinal) >= 0 ||
-                source.IndexOf(BlockEnd, end + BlockEnd.Length, StringComparison.Ordinal) >= 0)
-                throw new InvalidOperationException(
-                    $"View 文件缺少唯一的自动绑定区块，生成器不会覆盖手写代码：{viewPath}");
-
-            end += BlockEnd.Length;
-            File.WriteAllText(viewPath,
-                source.Substring(0, start) + block + source.Substring(end), new UTF8Encoding(false));
+            source = ReplaceRequiredBlock(source, BLOCKSTART, BLOCKEND, bindingBlock, viewPath);
+            source = ReplaceOrInsertAnimationBlock(source, animationBlock, viewPath);
+            File.WriteAllText(viewPath, source, new UTF8Encoding(false));
         }
 
         internal static void ApplyBindings(string prefabPath)
@@ -89,6 +84,12 @@ namespace AlloyFramework.Editor
             {
                 if (root.GetComponentInChildren<UIRoot>(true) != null) return;
                 var view = GetView(root, path);
+                var animationPlayer = root.GetComponent<UIAnimationPlayer>();
+                if (animationPlayer != null)
+                {
+                    UIAnimationValidation.ValidateOrThrow(animationPlayer);
+                }
+
                 foreach (var binding in Scan(root.transform))
                 {
                     var property = new SerializedObject(view).FindProperty(binding.FieldName);
@@ -179,7 +180,11 @@ namespace AlloyFramework.Editor
                     throw new InvalidOperationException($"绑定字段名称无效：{value}，节点：{path}。");
         }
 
-        private static string BuildView(string scriptNamespace, string viewName, string block)
+        private static string BuildView(
+            string scriptNamespace,
+            string viewName,
+            string bindingBlock,
+            string animationBlock)
         {
             var source = new StringBuilder();
             source.AppendLine("using AlloyFramework.UI;");
@@ -188,7 +193,9 @@ namespace AlloyFramework.Editor
             source.AppendLine("{");
             source.AppendLine($"    public sealed partial class {viewName} : UIView");
             source.AppendLine("    {");
-            source.AppendLine(block);
+            source.AppendLine(bindingBlock);
+            source.AppendLine();
+            source.AppendLine(animationBlock);
             source.AppendLine("    }");
             source.AppendLine("}");
             return source.ToString();
@@ -197,7 +204,7 @@ namespace AlloyFramework.Editor
         private static string BuildBindingBlock(IReadOnlyList<BindingInfo> bindings)
         {
             var source = new StringBuilder();
-            source.AppendLine(BlockStart);
+            source.AppendLine(BLOCKSTART);
             source.AppendLine("        // 此区块由 AlloyFramework UI 生成器维护，请勿手动修改。");
             foreach (var binding in bindings)
             {
@@ -208,8 +215,127 @@ namespace AlloyFramework.Editor
                 source.AppendLine();
             }
             if (bindings.Count > 0) source.Length -= Environment.NewLine.Length;
-            source.Append(BlockEnd);
+            source.Append(BLOCKEND);
             return source.ToString();
+        }
+
+        private static List<string> ScanAnimationKeys(GameObject prefab)
+        {
+            var result = new List<string>();
+            var animationPlayer = prefab.GetComponent<UIAnimationPlayer>();
+            if (animationPlayer == null)
+            {
+                return result;
+            }
+
+            UIAnimationValidation.ValidateOrThrow(animationPlayer);
+            var sourceKeys = new HashSet<string>(StringComparer.Ordinal);
+            var constantNames = new HashSet<string>(StringComparer.Ordinal);
+            var definitions = animationPlayer.Animations;
+            for (var index = 0; index < definitions.Count; index++)
+            {
+                var definition = definitions[index];
+                if (definition == null)
+                {
+                    throw new InvalidOperationException($"动效配置为空：索引={index}，Prefab={prefab.name}。");
+                }
+
+                if (definition.Key == UIAnimationKeys.OPEN || definition.Key == UIAnimationKeys.CLOSE)
+                {
+                    continue;
+                }
+
+                UIAnimationValidationRules.ValidateKey(definition.Key);
+                if (!sourceKeys.Add(definition.Key))
+                {
+                    throw new InvalidOperationException($"自定义动效 Key 重复：{definition.Key}。");
+                }
+
+                var constantName = definition.Key.ToUpperInvariant();
+                if (!constantNames.Add(constantName))
+                {
+                    throw new InvalidOperationException(
+                        $"自定义动效 Key 转换为常量名后冲突：{definition.Key} -> {constantName}。");
+                }
+
+                result.Add(definition.Key);
+            }
+
+            return result;
+        }
+
+        private static string BuildAnimationKeyBlock(IReadOnlyList<string> animationKeys)
+        {
+            var source = new StringBuilder();
+            source.AppendLine(ANIMATIONBLOCKSTART);
+            source.AppendLine("        // 此区块由 AlloyFramework UI 生成器维护，请勿手动修改。");
+            source.AppendLine("        public static class AnimationKeys");
+            source.AppendLine("        {");
+            for (var index = 0; index < animationKeys.Count; index++)
+            {
+                var animationKey = animationKeys[index];
+                source.AppendLine("            /// <summary>");
+                source.AppendLine($"            /// {animationKey} 自定义动效 Key。");
+                source.AppendLine("            /// </summary>");
+                source.AppendLine(
+                    $"            public const string {animationKey.ToUpperInvariant()} = \"{animationKey}\";");
+                if (index < animationKeys.Count - 1)
+                {
+                    source.AppendLine();
+                }
+            }
+
+            source.AppendLine("        }");
+            source.Append(ANIMATIONBLOCKEND);
+            return source.ToString();
+        }
+
+        private static string ReplaceRequiredBlock(
+            string source,
+            string blockStart,
+            string blockEnd,
+            string replacement,
+            string viewPath)
+        {
+            var start = source.IndexOf(blockStart, StringComparison.Ordinal);
+            var end = source.IndexOf(blockEnd, StringComparison.Ordinal);
+            if (start < 0 || end < 0 || end < start ||
+                source.IndexOf(blockStart, start + blockStart.Length, StringComparison.Ordinal) >= 0 ||
+                source.IndexOf(blockEnd, end + blockEnd.Length, StringComparison.Ordinal) >= 0)
+            {
+                throw new InvalidOperationException(
+                    $"View 文件缺少唯一的自动绑定区块，生成器不会覆盖手写代码：{viewPath}");
+            }
+
+            end += blockEnd.Length;
+            return source.Substring(0, start) + replacement + source.Substring(end);
+        }
+
+        private static string ReplaceOrInsertAnimationBlock(
+            string source,
+            string animationBlock,
+            string viewPath)
+        {
+            var start = source.IndexOf(ANIMATIONBLOCKSTART, StringComparison.Ordinal);
+            var end = source.IndexOf(ANIMATIONBLOCKEND, StringComparison.Ordinal);
+            if (start < 0 && end < 0)
+            {
+                var bindingEnd = source.IndexOf(BLOCKEND, StringComparison.Ordinal) + BLOCKEND.Length;
+                return source.Insert(bindingEnd, Environment.NewLine + Environment.NewLine + animationBlock);
+            }
+
+            if (start < 0 || end < 0 || end < start ||
+                source.IndexOf(ANIMATIONBLOCKSTART, start + ANIMATIONBLOCKSTART.Length,
+                    StringComparison.Ordinal) >= 0 ||
+                source.IndexOf(ANIMATIONBLOCKEND, end + ANIMATIONBLOCKEND.Length,
+                    StringComparison.Ordinal) >= 0)
+            {
+                throw new InvalidOperationException(
+                    $"View 文件的自动动效 Key 区块不完整或不唯一：{viewPath}");
+            }
+
+            end += ANIMATIONBLOCKEND.Length;
+            return source.Substring(0, start) + animationBlock + source.Substring(end);
         }
 
         private static string GetTypeName(Type type) => type.FullName?.Replace('+', '.') ?? type.Name;

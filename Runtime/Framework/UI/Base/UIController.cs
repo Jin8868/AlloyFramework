@@ -34,7 +34,8 @@ namespace AlloyFramework.UI
         internal void Resume() => OnResume();
         internal void Closed() => OnClose();
         internal void StartCloseAnimation() => OnStartCloseAnimation();
-        internal UniTask PlayCloseAnimationAsync() => OnCloseAnimationAsync();
+        internal UniTask PlayCloseAnimationAsync(CancellationToken cancellationToken) =>
+            OnCloseAnimationAsync(cancellationToken);
         internal void EndCloseAnimation() => OnEndCloseAnimation();
         internal void DisposeController() { OnDispose(); m_handle = null; }
 
@@ -48,7 +49,8 @@ namespace AlloyFramework.UI
         protected virtual void OnResume() { }
         protected virtual void OnClose() { }
         protected virtual void OnStartCloseAnimation() { }
-        protected virtual UniTask OnCloseAnimationAsync() => UniTask.CompletedTask;
+        protected virtual UniTask OnCloseAnimationAsync(CancellationToken cancellationToken) =>
+            UniTask.CompletedTask;
         protected virtual void OnEndCloseAnimation() { }
         protected virtual void OnDispose() { }
     }
@@ -86,7 +88,8 @@ namespace AlloyFramework.UI
             OnRefresh(Data);
         }
 
-        protected virtual UniTask OnPrepareAsync(TData data, CancellationToken cancellationToken) => UniTask.CompletedTask;
+        protected virtual UniTask OnPrepareAsync(TData data, CancellationToken cancellationToken) =>
+            UniTask.CompletedTask;
         protected virtual void OnInitData(TData data) { }
         protected virtual void OnRefresh(TData data) { }
     }

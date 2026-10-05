@@ -549,7 +549,8 @@ namespace AlloyFramework.Editor
             source.AppendLine("        }");
             source.AppendLine();
             source.AppendLine("        // 返回关闭动画任务；没有动画时直接返回已完成任务。");
-            source.AppendLine("        protected override UniTask OnCloseAnimationAsync()");
+            source.AppendLine("        protected override UniTask OnCloseAnimationAsync(");
+            source.AppendLine("            CancellationToken cancellationToken)");
             source.AppendLine("        {");
             source.AppendLine("            return UniTask.CompletedTask;");
             source.AppendLine("        }");
