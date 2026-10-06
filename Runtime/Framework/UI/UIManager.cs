@@ -18,6 +18,8 @@ namespace AlloyFramework.UI
         private IInstanceHandle m_rootInstance;
         private UIRoot m_root;
         private long m_nextInstanceId;
+        private long m_nextDisplayOrder; // 独立于物理父节点的递增显示顺序。
+        private UIBlurCoordinator m_blur; // 统一管理最高模糊界面的背景和渲染分离。
 
         internal UIManager() { }
 
@@ -42,11 +44,14 @@ namespace AlloyFramework.UI
                 m_root.Initialize(m_rootInstance.Instance);
                 UnityEngine.Object.DontDestroyOnLoad(m_rootInstance.Instance);
                 m_navigator = new UINavigator(this);
+                m_blur = new UIBlurCoordinator(m_root, m_entries);
                 Instance = this;
                 FrameworkStartupLog.Step("校验并启用 UI 根节点", validationStartedAt);
             }
             catch
             {
+                m_blur?.Dispose();
+                m_blur = null;
                 m_rootInstance?.Dispose();
                 m_rootInstance = null;
                 m_root = null;
@@ -61,6 +66,8 @@ namespace AlloyFramework.UI
             if (ReferenceEquals(Instance, this)) Instance = null;
             m_shutdown?.Cancel();
             m_navigator?.Clear();
+            m_blur?.Dispose();
+            m_blur = null;
             var snapshot = m_entries.ToArray();
             foreach (var entry in snapshot) Release(entry);
             m_entries.Clear();
@@ -145,6 +152,22 @@ namespace AlloyFramework.UI
 
             rectTransform = entry.View.transform as RectTransform;
             return rectTransform != null;
+        }
+
+        /// <summary>配置背景模糊，可在业务启动时或运行时切换静态降级模式。</summary>
+        /// <param name="settings">更新模式、质量和专用 Layer 配置。</param>
+        /// <exception cref="ArgumentNullException">配置为空。</exception>
+        /// <exception cref="ArgumentException">配置参数不合法。</exception>
+        /// <exception cref="InvalidOperationException">框架未启动或活跃期间更改专用 Layer。</exception>
+        public void ConfigureBlur(UIBlurSettings settings)
+        {
+            EnsureReady();
+            if (settings == null)
+            {
+                throw new ArgumentNullException(nameof(settings));
+            }
+
+            m_blur.Configure(settings);
         }
 
         public void Register(UIDefinition definition)
@@ -518,7 +541,7 @@ namespace AlloyFramework.UI
             UIEntry best = null;
             foreach (var entry in m_entries)
                 if (entry.Definition.Layer == layer && entry.State == UIState.Active &&
-                    (best == null || entry.View.transform.GetSiblingIndex() > best.View.transform.GetSiblingIndex()))
+                    (best == null || entry.DisplayOrder > best.DisplayOrder))
                     best = entry;
             return best?.Handle;
         }
@@ -620,6 +643,7 @@ namespace AlloyFramework.UI
                 entry.Controller.UIName = entry.Definition.UIName;
                 entry.Controller.State = entry.State;
                 entry.Controller.AttachView(entry.View);
+                BringToFront(entry);
             }
             else
             {
@@ -637,6 +661,12 @@ namespace AlloyFramework.UI
                 (TController)entry.Controller, CloseAsync, entry);
             entry.Handle = handle;
             entry.Controller.SetHandle(handle);
+            if (entry.Definition.BackgroundMode == UIBackgroundMode.Blur)
+            {
+                // 准备期间隐藏本界面，防止首次捕获之前出现未初始化内容。
+                canvasGroup.alpha = 0f;
+            }
+
             if (!entry.Created)
             {
                 entry.Created = true;
@@ -647,6 +677,14 @@ namespace AlloyFramework.UI
             await entry.Controller.PrepareAsync(data, token);
             token.ThrowIfCancellationRequested();
             entry.Controller.InitData(data);
+            await m_blur.PrepareAsync(entry, token);
+            token.ThrowIfCancellationRequested();
+            if (entry.Definition.BackgroundMode == UIBackgroundMode.Blur)
+            {
+                // 恢复可见基准值，再由开场动画首帧覆盖其控制的属性。
+                canvasGroup.alpha = 1f;
+            }
+
             entry.OpenLifecycleStarted = true;
             entry.View.PrepareOpenAnimation();
             SetState(entry, UIState.Opening);
@@ -738,6 +776,7 @@ namespace AlloyFramework.UI
                 else
                 {
                     entry.Instance.Instance.SetActive(false);
+                    m_blur?.Release(entry);
                     SetState(entry, UIState.Cached);
                     entry.Lifetime?.Dispose();
                     entry.Lifetime = null;
@@ -814,8 +853,17 @@ namespace AlloyFramework.UI
             return data;
         }
 
-        private static void BringToFront(UIEntry entry) =>
-            entry.Instance?.Instance.transform.SetAsLastSibling();
+        private static void BringToFront(UIEntry entry)
+        {
+            if (entry.View == null)
+            {
+                return;
+            }
+
+            // 逻辑顺序不随背景和前景画布之间的路由变化。
+            entry.DisplayOrder = ++Instance.m_nextDisplayOrder;
+            entry.SortTransform.SetAsLastSibling();
+        }
 
         private static void SetState(UIEntry entry, UIState state)
         {
@@ -826,6 +874,7 @@ namespace AlloyFramework.UI
         private void Release(UIEntry entry)
         {
             if (entry.State == UIState.Disposed) return;
+            m_blur?.Release(entry);
             var uiName = entry.Definition.UIName;
             var hadInstance = entry.Instance != null;
             entry.Lifetime?.Cancel();

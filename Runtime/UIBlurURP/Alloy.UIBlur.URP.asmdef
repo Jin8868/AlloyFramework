@@ -1,0 +1,22 @@
+{
+  "name": "Alloy.UIBlur.URP",
+  "rootNamespace": "AlloyFramework.UI",
+  "references": [
+    "Alloy.Runtime",
+    "Alloy.Core",
+    "UniTask",
+    "Unity.ugui",
+    "Unity.RenderPipelines.Core.Runtime",
+    "Unity.RenderPipelines.Universal.Runtime"
+  ],
+  "autoReferenced": true,
+  "defineConstraints": ["ALLOYURP14"],
+  "versionDefines": [
+    {
+      "name": "com.unity.render-pipelines.universal",
+      "expression": "[14.0,15.0)",
+      "define": "ALLOYURP14"
+    }
+  ],
+  "noEngineReferences": false
+}

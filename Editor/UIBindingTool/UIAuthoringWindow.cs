@@ -181,8 +181,12 @@ namespace AlloyFramework.Editor
             m_settings.PauseCovered = EditorGUILayout.Toggle("覆盖时暂停下层", m_settings.PauseCovered);
             if (EditorGUI.EndChangeCheck()) UIAuthoringSettings.SetDirty();
             if (m_settings.Background == UIBackgroundMode.Blur)
-                EditorGUILayout.HelpBox("模糊会写入 UI 定义；运行时模糊效果将在后续阶段实现。", MessageType.Warning);
-            EditorGUILayout.HelpBox("布局、背景遮罩、点击空白关闭、导航和覆盖暂停目前只写入定义；对应运行时策略将在后续阶段实现。", MessageType.Info);
+                EditorGUILayout.HelpBox(
+                    "模糊已接入运行时。请配置 UIBlurForeground Layer，并在 URP Renderer 添加 UIBlurRendererFeature 和 Shader。",
+                    MessageType.Info);
+            EditorGUILayout.HelpBox(
+                "背景黑色遮罩由预制体提供；布局、点击空白关闭和覆盖暂停需按项目的运行时策略处理。",
+                MessageType.Info);
 
             EditorGUILayout.Space(12);
             if (GUILayout.Button("生成界面代码并绑定预制体", GUILayout.Height(36))) Generate();

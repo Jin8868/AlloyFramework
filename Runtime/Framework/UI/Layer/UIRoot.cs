@@ -13,6 +13,9 @@ namespace AlloyFramework.UI
         private CanvasScaler m_scaler;
         private Canvas m_rootCanvas; // WindowRoot 的主画布。
         private RectTransform m_windowRoot; // 全屏 UI 内容根节点。
+        private Canvas m_foregroundCanvas; // 与背景画布平级的前景根画布。
+        private CanvasScaler m_foregroundScaler; // 跟随背景参考分辨率的前景缩放器。
+        private Camera m_foregroundCamera; // 预制体中供模糊前景复用的相机。
         private UIScreenAdaptationSystem m_screenAdaptationSystem; // 全局屏幕适配快照与目标注册系统。
         [SerializeField] private EUIScreenOrientationMode m_orientationMode =
             EUIScreenOrientationMode.FixedLandscape; // 屏幕方向缩放策略。
@@ -26,6 +29,8 @@ namespace AlloyFramework.UI
         public CanvasScaler Scaler => m_scaler;
         internal Canvas RootCanvas => m_rootCanvas;
         internal RectTransform WindowRoot => m_windowRoot;
+        internal Canvas ForegroundCanvas => m_foregroundCanvas;
+        internal Camera ForegroundCamera => m_foregroundCamera;
         internal bool IsInitialized => m_layers != null;
         internal UIScreenAdaptationSystem ScreenAdaptationSystem => m_screenAdaptationSystem;
 
@@ -53,7 +58,21 @@ namespace AlloyFramework.UI
                     throw new InvalidOperationException(
                         "WindowRoot UI Camera must use a full-screen Viewport Rect.");
             }
-            var eventSystems = prefabRoot.GetComponentsInChildren<UnityEngine.EventSystems.EventSystem>(true);
+            // 前景相机由预制体管理，非模糊期间不参与渲染。
+            var foregroundCameraNode = prefabRoot.transform.Find("CameraRoot/BlurForegroundCamera");
+            m_foregroundCamera = foregroundCameraNode == null
+                ? null : foregroundCameraNode.GetComponent<Camera>();
+            if (m_foregroundCamera != null)
+            {
+                m_foregroundCamera.enabled = false;
+            }
+
+            var foregroundRoot = prefabRoot.transform.Find("ForegroundRoot");
+            m_foregroundCanvas = foregroundRoot == null ? null : foregroundRoot.GetComponent<Canvas>();
+            m_foregroundScaler = foregroundRoot == null ? null : foregroundRoot.GetComponent<CanvasScaler>();
+
+            var eventSystems =
+                prefabRoot.GetComponentsInChildren<UnityEngine.EventSystems.EventSystem>(true);
             if (eventSystems.Length != 1 ||
                 !eventSystems[0].transform.IsChildOf(windowRoot) ||
                 eventSystems[0].GetComponent<BaseInputModule>() == null)
@@ -64,7 +83,8 @@ namespace AlloyFramework.UI
             foreach (var layer in found)
             {
                 if (layer.transform.parent != windowRoot)
-                    throw new InvalidOperationException($"UIRoot layer {layer.name} must be a direct child of WindowRoot.");
+                    throw new InvalidOperationException(
+                        $"UIRoot layer {layer.name} must be a direct child of WindowRoot.");
                 if (!Enum.IsDefined(typeof(UILayer), layer.Layer))
                     throw new InvalidOperationException($"UIRoot has an unknown layer value on {layer.name}.");
                 if (layer.GetComponent<GraphicRaycaster>() == null)
@@ -81,6 +101,41 @@ namespace AlloyFramework.UI
             m_layers = layers;
             m_screenAdaptationSystem = new UIScreenAdaptationSystem(HandleScreenAdaptationChanged);
             m_screenAdaptationSystem.Initialize();
+        }
+
+        internal void SynchronizeForegroundCanvas()
+        {
+            // 两个根画布必须独立，嵌套 Canvas 无法只靠 Layer 切换渲染相机。
+            if (m_foregroundCanvas == null || m_foregroundScaler == null || m_foregroundCamera == null ||
+                !(m_foregroundCanvas.transform is RectTransform) ||
+                m_foregroundCanvas.transform.parent != m_windowRoot.parent ||
+                m_foregroundCanvas.rootCanvas != m_foregroundCanvas ||
+                !m_foregroundCanvas.gameObject.activeInHierarchy || !m_foregroundCamera.gameObject.activeInHierarchy)
+            {
+                throw new InvalidOperationException(
+                    "UI 模糊需要 UIRoot/ForegroundRoot 上的 Canvas 和 CanvasScaler，" +
+                    "以及 CameraRoot/BlurForegroundCamera；两个根节点及相机对象必须激活。");
+            }
+
+            // 保留 Screen Space - Camera 适配，前景配置统一跟随 WindowRoot。
+            m_foregroundCanvas.enabled = true;
+            m_foregroundCanvas.renderMode = RenderMode.ScreenSpaceCamera;
+            m_foregroundCanvas.worldCamera = m_foregroundCamera;
+            m_foregroundCanvas.planeDistance = m_rootCanvas.planeDistance;
+            m_foregroundCanvas.sortingLayerID = m_rootCanvas.sortingLayerID;
+            m_foregroundCanvas.pixelPerfect = m_rootCanvas.pixelPerfect;
+            m_foregroundCanvas.additionalShaderChannels = m_rootCanvas.additionalShaderChannels;
+            m_foregroundCanvas.targetDisplay = m_rootCanvas.targetDisplay;
+            ((RectTransform)m_foregroundCanvas.transform).pivot = m_windowRoot.pivot;
+            m_foregroundScaler.enabled = m_scaler.enabled;
+            m_foregroundScaler.uiScaleMode = m_scaler.uiScaleMode;
+            m_foregroundScaler.screenMatchMode = m_scaler.screenMatchMode;
+            m_foregroundScaler.referenceResolution = m_scaler.referenceResolution;
+            m_foregroundScaler.matchWidthOrHeight = m_scaler.matchWidthOrHeight;
+            m_foregroundScaler.scaleFactor = m_scaler.scaleFactor;
+            m_foregroundScaler.referencePixelsPerUnit = m_scaler.referencePixelsPerUnit;
+            m_foregroundCanvas.scaleFactor = m_rootCanvas.scaleFactor;
+            m_foregroundCanvas.referencePixelsPerUnit = m_rootCanvas.referencePixelsPerUnit;
         }
 
         private void OnDestroy()
