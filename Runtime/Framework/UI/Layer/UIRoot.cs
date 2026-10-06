@@ -11,8 +11,19 @@ namespace AlloyFramework.UI
     {
         private Dictionary<UILayer, UILayerRoot> m_layers;
         private CanvasScaler m_scaler;
+        private UIScreenAdaptationSystem m_screenAdaptationSystem; // 全局屏幕适配快照与目标注册系统。
+        [SerializeField] private EUIScreenOrientationMode m_orientationMode =
+            EUIScreenOrientationMode.FixedLandscape; // 屏幕方向缩放策略。
+        [SerializeField] private Vector2 m_landscapeReferenceResolution =
+            new Vector2(1920f, 1080f); // 横屏设计参考分辨率。
+        [SerializeField, Range(0f, 1f)] private float m_landscapeMatchWidthOrHeight; // 横屏缩放匹配值。
+        [SerializeField] private Vector2 m_portraitReferenceResolution =
+            new Vector2(1080f, 1920f); // 竖屏设计参考分辨率。
+        [SerializeField, Range(0f, 1f)] private float m_portraitMatchWidthOrHeight = 1f; // 竖屏缩放匹配值。
 
         public CanvasScaler Scaler => m_scaler;
+        internal bool IsInitialized => m_layers != null;
+        internal UIScreenAdaptationSystem ScreenAdaptationSystem => m_screenAdaptationSystem;
 
         internal void Initialize(GameObject prefabRoot)
         {
@@ -26,8 +37,16 @@ namespace AlloyFramework.UI
             m_scaler = windowRoot.GetComponent<CanvasScaler>();
             if (m_scaler == null)
                 throw new InvalidOperationException("WindowRoot needs a CanvasScaler.");
-            if (canvas.renderMode == RenderMode.ScreenSpaceCamera && canvas.worldCamera == null)
-                throw new InvalidOperationException("WindowRoot Screen Space - Camera canvas has no Render Camera.");
+            if (canvas.renderMode == RenderMode.ScreenSpaceCamera)
+            {
+                var camera = canvas.worldCamera;
+                if (camera == null)
+                    throw new InvalidOperationException(
+                        "WindowRoot Screen Space - Camera canvas has no Render Camera.");
+                if (camera.rect != new Rect(0f, 0f, 1f, 1f))
+                    throw new InvalidOperationException(
+                        "WindowRoot UI Camera must use a full-screen Viewport Rect.");
+            }
             var eventSystems = prefabRoot.GetComponentsInChildren<UnityEngine.EventSystems.EventSystem>(true);
             if (eventSystems.Length != 1 ||
                 !eventSystems[0].transform.IsChildOf(windowRoot) ||
@@ -54,6 +73,15 @@ namespace AlloyFramework.UI
                 if (!layers.ContainsKey(value))
                     throw new InvalidOperationException($"UIRoot is missing the {value} layer.");
             m_layers = layers;
+            m_screenAdaptationSystem = new UIScreenAdaptationSystem(HandleScreenAdaptationChanged);
+            m_screenAdaptationSystem.Initialize();
+        }
+
+        private void OnDestroy()
+        {
+            m_screenAdaptationSystem?.Dispose();
+            m_screenAdaptationSystem = null;
+            m_layers = null;
         }
 
         internal RectTransform GetLayer(UILayer layer)
@@ -61,6 +89,62 @@ namespace AlloyFramework.UI
             if (m_layers == null)
                 throw new InvalidOperationException("UIRoot is not initialized.");
             return m_layers[layer].Content;
+        }
+
+        internal void RegisterScreenAdaptationTarget(IUIScreenAdaptationTarget target)
+        {
+            if (m_screenAdaptationSystem == null)
+            {
+                throw new InvalidOperationException("UIRoot 屏幕适配系统尚未初始化。");
+            }
+
+            m_screenAdaptationSystem.Register(target);
+        }
+
+        internal void UnregisterScreenAdaptationTarget(IUIScreenAdaptationTarget target)
+        {
+            m_screenAdaptationSystem?.Unregister(target);
+        }
+
+        private void ApplyOrientationLayout(bool isLandscape)
+        {
+            if (m_scaler == null)
+            {
+                m_scaler = GetComponentInChildren<CanvasScaler>(true);
+            }
+
+            if (m_scaler == null)
+            {
+                return;
+            }
+
+            var referenceResolution = isLandscape
+                ? m_landscapeReferenceResolution
+                : m_portraitReferenceResolution;
+            var matchWidthOrHeight = isLandscape
+                ? m_landscapeMatchWidthOrHeight
+                : m_portraitMatchWidthOrHeight;
+            m_scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
+            m_scaler.referenceResolution = referenceResolution;
+            m_scaler.matchWidthOrHeight = matchWidthOrHeight;
+            Canvas.ForceUpdateCanvases();
+        }
+
+        private void HandleScreenAdaptationChanged(UIScreenAdaptationSnapshot snapshot)
+        {
+            if (m_orientationMode == EUIScreenOrientationMode.FixedLandscape)
+            {
+                ApplyOrientationLayout(true);
+                return;
+            }
+
+            if (m_orientationMode == EUIScreenOrientationMode.FixedPortrait)
+            {
+                ApplyOrientationLayout(false);
+                return;
+            }
+
+            ApplyOrientationLayout(snapshot.ScreenWidth >= snapshot.ScreenHeight);
         }
     }
 }

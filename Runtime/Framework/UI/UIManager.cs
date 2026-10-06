@@ -107,6 +107,26 @@ namespace AlloyFramework.UI
         }
 
         /// <summary>
+        /// 注册需要接收全局屏幕适配快照的目标，并立即应用当前快照。
+        /// </summary>
+        /// <param name="target">需要接收屏幕适配更新的目标。</param>
+        public void RegisterScreenAdaptationTarget(IUIScreenAdaptationTarget target)
+        {
+            EnsureReady();
+            m_root.RegisterScreenAdaptationTarget(target);
+        }
+
+        /// <summary>
+        /// 注销不再需要接收全局屏幕适配快照的目标。
+        /// </summary>
+        /// <param name="target">需要注销的屏幕适配目标。</param>
+        public void UnregisterScreenAdaptationTarget(IUIScreenAdaptationTarget target)
+        {
+            EnsureReady();
+            m_root.UnregisterScreenAdaptationTarget(target);
+        }
+
+        /// <summary>
         /// 尝试按稳定 UI 名称取得已注册的界面定义。
         /// </summary>
         /// <param name="uiName">界面的稳定名称。</param>
