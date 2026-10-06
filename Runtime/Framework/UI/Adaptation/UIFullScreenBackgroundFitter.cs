@@ -1,3 +1,6 @@
+#if UNITY_EDITOR
+using UnityEditor;
+#endif
 using UnityEngine;
 using UnityEngine.UI;
 
@@ -15,15 +18,39 @@ namespace AlloyFramework.UI
         private AspectRatioFitter m_aspectRatioFitter; // Unity 内置比例适配器。
         private RectTransform m_rectTransform; // 背景的目标节点。
 
-        private void Awake()
+        private void Start()
         {
+            // 首次布局在初始化校验结束后应用，避免 Awake 中触发尺寸变更消息。
             ApplyLayout();
         }
 
         private void OnValidate()
         {
+#if UNITY_EDITOR
+            // 合并连续 Inspector 修改，退出校验回调后再调整布局。
+            EditorApplication.delayCall -= ApplyDeferredLayout;
+            EditorApplication.delayCall += ApplyDeferredLayout;
+#endif
+        }
+
+        private void OnDestroy()
+        {
+#if UNITY_EDITOR
+            EditorApplication.delayCall -= ApplyDeferredLayout;
+#endif
+        }
+
+#if UNITY_EDITOR
+        private void ApplyDeferredLayout()
+        {
+            if (this == null || !isActiveAndEnabled)
+            {
+                return;
+            }
+
             ApplyLayout();
         }
+#endif
 
         private void ApplyLayout()
         {
