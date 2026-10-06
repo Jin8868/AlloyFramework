@@ -11,6 +11,8 @@ namespace AlloyFramework.UI
     {
         private Dictionary<UILayer, UILayerRoot> m_layers;
         private CanvasScaler m_scaler;
+        private Canvas m_rootCanvas; // WindowRoot 的主画布。
+        private RectTransform m_windowRoot; // 全屏 UI 内容根节点。
         private UIScreenAdaptationSystem m_screenAdaptationSystem; // 全局屏幕适配快照与目标注册系统。
         [SerializeField] private EUIScreenOrientationMode m_orientationMode =
             EUIScreenOrientationMode.FixedLandscape; // 屏幕方向缩放策略。
@@ -22,6 +24,8 @@ namespace AlloyFramework.UI
         [SerializeField, Range(0f, 1f)] private float m_portraitMatchWidthOrHeight = 1f; // 竖屏缩放匹配值。
 
         public CanvasScaler Scaler => m_scaler;
+        internal Canvas RootCanvas => m_rootCanvas;
+        internal RectTransform WindowRoot => m_windowRoot;
         internal bool IsInitialized => m_layers != null;
         internal UIScreenAdaptationSystem ScreenAdaptationSystem => m_screenAdaptationSystem;
 
@@ -34,6 +38,8 @@ namespace AlloyFramework.UI
             var canvas = windowRoot.GetComponent<Canvas>();
             if (canvas == null)
                 throw new InvalidOperationException("WindowRoot needs a Canvas.");
+            m_rootCanvas = canvas;
+            m_windowRoot = windowRoot as RectTransform;
             m_scaler = windowRoot.GetComponent<CanvasScaler>();
             if (m_scaler == null)
                 throw new InvalidOperationException("WindowRoot needs a CanvasScaler.");
@@ -89,6 +95,11 @@ namespace AlloyFramework.UI
             if (m_layers == null)
                 throw new InvalidOperationException("UIRoot is not initialized.");
             return m_layers[layer].Content;
+        }
+
+        internal Canvas GetLayerCanvas(UILayer layer)
+        {
+            return m_layers[layer].GetComponent<Canvas>();
         }
 
         internal void RegisterScreenAdaptationTarget(IUIScreenAdaptationTarget target)

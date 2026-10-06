@@ -40,6 +40,12 @@ namespace AlloyFramework.UI
             GameLoop.Register(this);
         }
 
+        internal bool TryGetSnapshot(out UIScreenAdaptationSnapshot snapshot)
+        {
+            snapshot = m_snapshot;
+            return !m_disposed && m_hasSnapshot;
+        }
+
         public void Register(IUIScreenAdaptationTarget target)
         {
             if (target == null)

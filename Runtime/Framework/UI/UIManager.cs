@@ -74,6 +74,79 @@ namespace AlloyFramework.UI
             m_shutdown = null;
         }
 
+        /// <summary>当前全屏 UI 主画布。</summary>
+        public Canvas RootCanvas
+        {
+            get { EnsureReady(); return m_root.RootCanvas; }
+        }
+
+        /// <summary>主画布使用的 UI 相机；Overlay 模式下为空。</summary>
+        public Camera UICamera => RootCanvas.renderMode == RenderMode.ScreenSpaceOverlay
+            ? null : RootCanvas.worldCamera;
+
+        /// <summary>当前全屏 UI 缩放器。</summary>
+        public UnityEngine.UI.CanvasScaler CanvasScaler
+        {
+            get { EnsureReady(); return m_root.Scaler; }
+        }
+
+        /// <summary>全屏 UI 内容根容器。</summary>
+        public RectTransform WindowRoot
+        {
+            get { EnsureReady(); return m_root.WindowRoot; }
+        }
+
+        /// <summary>获取指定 UI 层的内容容器。</summary>
+        /// <param name="layer">目标 UI 层。</param>
+        /// <returns>目标层的内容容器。</returns>
+        public RectTransform GetLayerRoot(UILayer layer)
+        {
+            EnsureReady();
+            return m_root.GetLayer(layer);
+        }
+
+        /// <summary>获取指定 UI 层的画布。</summary>
+        /// <param name="layer">目标 UI 层。</param>
+        /// <returns>目标层的画布。</returns>
+        public Canvas GetLayerCanvas(UILayer layer)
+        {
+            EnsureReady();
+            return m_root.GetLayerCanvas(layer);
+        }
+
+        /// <summary>尝试获取当前有效的屏幕适配快照。</summary>
+        /// <param name="snapshot">成功时返回当前快照。</param>
+        /// <returns>存在有效快照时返回 true。</returns>
+        public bool TryGetScreenAdaptationSnapshot(out UIScreenAdaptationSnapshot snapshot)
+        {
+            snapshot = default;
+            return ReferenceEquals(Instance, this) && m_root != null &&
+                   m_root.ScreenAdaptationSystem != null &&
+                   m_root.ScreenAdaptationSystem.TryGetSnapshot(out snapshot);
+        }
+
+        /// <summary>尝试获取当前管理器所属界面实例的根节点。</summary>
+        /// <param name="handle">具体界面实例的句柄。</param>
+        /// <param name="rectTransform">成功时返回界面根节点。</param>
+        /// <returns>句柄有效且界面实例存在时返回 true。</returns>
+        public bool TryGetUIRectTransform(UIHandle handle, out RectTransform rectTransform)
+        {
+            rectTransform = null;
+            if (handle == null || !handle.IsValid)
+            {
+                return false;
+            }
+
+            var entry = FindByHandle(handle);
+            if (entry == null || entry.View == null)
+            {
+                return false;
+            }
+
+            rectTransform = entry.View.transform as RectTransform;
+            return rectTransform != null;
+        }
+
         public void Register(UIDefinition definition)
         {
             if (definition == null) throw new ArgumentNullException(nameof(definition));
@@ -345,6 +418,9 @@ namespace AlloyFramework.UI
         public void CloseAll(Action<Exception> onCompleted = null) =>
             UICallbacks.Run(CloseAllAsync, onCompleted);
 
+        /// <summary>判断指定名称是否有处于激活或暂停状态的界面。</summary>
+        /// <param name="uiName">界面的稳定名称。</param>
+        /// <returns>存在已打开实例时返回 true。</returns>
         public bool IsOpen(string uiName)
         {
             foreach (var entry in m_entries)
@@ -356,20 +432,85 @@ namespace AlloyFramework.UI
         public bool IsOpen(UIDefinition definition) =>
             IsOpen(definition?.UIName ?? throw new ArgumentNullException(nameof(definition)));
 
+        /// <summary>按界面定义获取最近打开实例的强类型句柄。</summary>
+        /// <param name="definition">目标界面的定义。</param>
+        /// <param name="handle">成功时返回对应的实例句柄。</param>
+        /// <typeparam name="TController">目标界面控制器类型。</typeparam>
+        /// <returns>存在已打开实例且类型匹配时返回 true。</returns>
+        /// <exception cref="ArgumentNullException">界面定义为空。</exception>
         public bool TryGet<TController>(UIDefinition definition, out UIHandle<TController> handle)
             where TController : UIController
         {
             if (definition == null) throw new ArgumentNullException(nameof(definition));
-            foreach (var entry in m_entries)
-                if (entry.Definition.UIName == definition.UIName &&
-                    (entry.State == UIState.Active || entry.State == UIState.Paused) &&
-                    entry.Handle is UIHandle<TController> typed)
-                {
-                    handle = typed;
-                    return true;
-                }
+            return TryGet(definition.UIName, out handle);
+        }
+
+        /// <summary>按名称获取最近打开且处于激活或暂停状态的界面。</summary>
+        /// <param name="uiName">界面的稳定名称。</param>
+        /// <param name="handle">成功时返回实例句柄。</param>
+        /// <returns>找到有效实例时返回 true。</returns>
+        public bool TryGet(string uiName, out UIHandle handle)
+        {
+            // 实例编号体现打开顺序，缓存实例重新打开也会得到新的编号。
             handle = null;
-            return false;
+            foreach (var entry in m_entries)
+            {
+                if (entry.Definition.UIName == uiName && IsEntryOpen(entry) &&
+                    (handle == null || entry.Handle.InstanceId > handle.InstanceId))
+                {
+                    handle = entry.Handle;
+                }
+            }
+
+            return handle != null;
+        }
+
+        /// <summary>按名称获取最近打开实例的强类型句柄。</summary>
+        /// <param name="uiName">界面的稳定名称。</param>
+        /// <param name="handle">成功时返回指定控制器类型的句柄。</param>
+        /// <typeparam name="TController">界面控制器类型。</typeparam>
+        /// <returns>找到实例且控制器类型匹配时返回 true。</returns>
+        public bool TryGet<TController>(string uiName, out UIHandle<TController> handle)
+            where TController : UIController
+        {
+            TryGet(uiName, out UIHandle currentHandle);
+            handle = currentHandle as UIHandle<TController>;
+            return handle != null;
+        }
+
+        /// <summary>获取指定名称的全部已打开实例，按打开顺序排列。</summary>
+        /// <param name="uiName">界面的稳定名称。</param>
+        /// <param name="results">接收结果的列表，调用时先清空。</param>
+        /// <exception cref="ArgumentNullException">结果列表为空。</exception>
+        public void GetOpenHandles(string uiName, List<UIHandle> results)
+        {
+            if (results == null)
+            {
+                throw new ArgumentNullException(nameof(results));
+            }
+
+            results.Clear();
+            foreach (var entry in m_entries)
+            {
+                if (entry.Definition.UIName != uiName || !IsEntryOpen(entry))
+                {
+                    continue;
+                }
+
+                var insertIndex = results.Count;
+                while (insertIndex > 0 && results[insertIndex - 1].InstanceId > entry.Handle.InstanceId)
+                {
+                    insertIndex--;
+                }
+
+                results.Insert(insertIndex, entry.Handle);
+            }
+        }
+
+        private static bool IsEntryOpen(UIEntry entry)
+        {
+            return (entry.State == UIState.Active || entry.State == UIState.Paused) &&
+                   entry.Handle != null && entry.Handle.IsValid;
         }
 
         public UIHandle Top(UILayer layer)
