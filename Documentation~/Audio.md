@@ -20,22 +20,22 @@ AudioPackage 和 DefaultPackage 的初始化设置收集组。
 
 ## 生成与导出
 
-在 UnityProj 目录执行：
+打开 Wwise 工程，点击 `Generate Checked` 或 `Generate All`。当前项目已配置 Windows 平台的
+Post-Generation Step，生成结束后自动调用项目 `ExportAudioContent.ps1`，更新清单与收集源。
+生成日志应出现“框架音频清单已导出”和“RawFile 收集目录”。导出失败时先修复错误再运行游戏。
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\Tools\Wwise\GenerateSoundBanks.ps1
-```
+项目手动生成入口 `Tools/Wwise/GenerateSoundBanks.ps1` 已删除。
+框架 `Tools~/Wwise/GenerateSoundBanks.ps1` 仍保留为可复用的命令行工具，需显式传入 Unity 项目目录。
+项目 `ExportAudioContent.ps1` 和 `ResolveFrameworkTools.ps1` 保留，生成后命令依赖这两个入口。
 
-其他机器可指定 `-WwiseInstallationPath`，或设置 `WWISE_INSTALLATION_PATH`。
-脚本读取 `Assets/WwiseSettings.xml`，生成对应平台，再执行 `ExportAudioContent.ps1`。
-已有生成结果时，可只重新导出：
+已有生成结果时，可在 UnityProj 目录只重新导出：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\Tools\Wwise\ExportAudioContent.ps1 -Platform Windows
 ```
 
-两个脚本都是长期制作工具，需要保留。修改 Event、媒体、Bank、平台或语言后重新生成和导出。
-只在 Wwise 中点击 Generate 而没有执行导出，会留下过期的框架清单并导致摘要校验失败。
+修改 Event、媒体、Bank、平台或语言后重新生成。EditorSimulate 退出再运行即可刷新清单；
+Offline/Host 仍需在 Unity 中执行“打包音频资源包”并交付新包。
 
 导出器读取当前 Schema 16 / SoundBank 172 的 JSON 元数据和 ProjectInfo 的生成器版本，
 生成 `AlloyAudioManifest.json`，同步运行所需文件到 `Assets/Res/WwiseAudio/<平台>`。
@@ -108,7 +108,7 @@ Key 为空、未就绪、失效作用域等调用错误直接抛出；资源或�
 
 界面可在 OnCreate 创建 `AudioScope`，调用时指定 Scope，OnDispose 释放它。
 NavigationHomeUIController 已按这个方式改为框架调用，两个按钮都调用 `Play_ButtonClick`。
-启动管线会预加载该事件并持有 StartupUI 作用域，其他事件仍按首次调用加载。
+启动按钮预加载示例已删除；事件按首次调用加载。
 预加载通过 `PreloadAudioAsync(key, scope)` 持有，scope.Dispose 释放预加载引用。
 
 空间声音使用 `new AudioEmitter(target)` 或 PlayOptions.Position，二者不能同时指定。
@@ -122,7 +122,7 @@ NavigationHomeUIController 已按这个方式改为框架调用，两个按钮�
 
 - `[Audio/Wwise] 默认监听器已注册，框架持久化对象已创建。`
 - `[Audio] 引擎与 Init 就绪：WwiseAudioBackend`
-- `[GameStartup] 完成：预加载按钮事件`
+- `[GameStartup] 完成：初始化框架音频与默认监听器`
 
 点击首页两个按钮，确认声音正常，切换页面不会创建第二份音频引擎。
 若失败，复制首条 `[Audio]` / `[Audio/Wwise]` 错误和紧邻的 Wwise 错误，不需要开启调试器。

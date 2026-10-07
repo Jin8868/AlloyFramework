@@ -62,5 +62,12 @@ if (-not (Test-Path -LiteralPath (Join-Path $sourcePath 'Init.bnk') -PathType Le
 
 Write-Host "SoundBank 已生成：$sourcePath"
 
-# 每次生成后同步更新框架依赖清单和 RawFile 收集源。
-& (Join-Path $PSScriptRoot 'ExportAudioContent.ps1') -UnityProjectRoot $resolvedUnityRoot -Platform $Platform
+# 已配置生成后自动导出的工程不重复导出，其他工程保留命令行导出入口。
+$postGenerationCommand = $project.SelectSingleNode(
+    "//ProjectInfo/Project/PropertyList/Property[@Name='SoundBankPostGenerateCustomCmdLines']/ValueList/Value[@Platform='$Platform']")
+if ($null -ne $postGenerationCommand -and
+    $postGenerationCommand.InnerText -match 'ExportAudioContent\.ps1') {
+    Write-Host '框架音频导出已交由 Wwise 生成后步骤执行，请检查生成日志中的导出结果。'
+} else {
+    & (Join-Path $PSScriptRoot 'ExportAudioContent.ps1') -UnityProjectRoot $resolvedUnityRoot -Platform $Platform
+}
