@@ -81,20 +81,24 @@ namespace AlloyFramework.UI
             m_shutdown = null;
         }
 
-        /// <summary>当前全屏 UI 主画布。</summary>
+        /// <summary>旧的全局画布查询；独立 Canvas 模式下返回 null。</summary>
+        [Obsolete("独立 Canvas 模式没有全局画布，请从目标 UIView 获取 Canvas。")]
         public Canvas RootCanvas
         {
             get { EnsureReady(); return m_root.RootCanvas; }
         }
 
-        /// <summary>主画布使用的 UI 相机；Overlay 模式下为空。</summary>
-        public Camera UICamera => RootCanvas.renderMode == RenderMode.ScreenSpaceOverlay
-            ? null : RootCanvas.worldCamera;
+        /// <summary>所有普通界面共享的 UI 相机。</summary>
+        public Camera UICamera
+        {
+            get { EnsureReady(); return m_root.UICamera; }
+        }
 
-        /// <summary>当前全屏 UI 缩放器。</summary>
+        /// <summary>旧的全局缩放器查询；独立 Canvas 模式下返回 null。</summary>
+        [Obsolete("独立 Canvas 模式没有全局缩放器，请从目标 UIView 获取 CanvasScaler。")]
         public UnityEngine.UI.CanvasScaler CanvasScaler
         {
-            get { EnsureReady(); return m_root.Scaler; }
+            get { EnsureReady(); return null; }
         }
 
         /// <summary>全屏 UI 内容根容器。</summary>
@@ -112,9 +116,10 @@ namespace AlloyFramework.UI
             return m_root.GetLayer(layer);
         }
 
-        /// <summary>获取指定 UI 层的画布。</summary>
+        /// <summary>旧的层画布查询；分类容器不再拥有 Canvas。</summary>
         /// <param name="layer">目标 UI 层。</param>
-        /// <returns>目标层的画布。</returns>
+        /// <returns>独立 Canvas 模式下始终返回 null。</returns>
+        [Obsolete("UI 层现在是普通容器，请使用 GetLayerRoot 或目标 UIView 上的 Canvas。")]
         public Canvas GetLayerCanvas(UILayer layer)
         {
             EnsureReady();
@@ -639,6 +644,17 @@ namespace AlloyFramework.UI
                         $"UI {entry.Definition.UIName} is missing " +
                         $"{entry.Definition.ViewType.Name} on the prefab root.");
                 }
+                // 先隐藏准备中的内容，再接入统一画布适配和相机排序。
+                var preparingGroup = gameObject.GetComponent<CanvasGroup>();
+                if (preparingGroup == null)
+                {
+                    preparingGroup = gameObject.AddComponent<CanvasGroup>();
+                }
+
+                preparingGroup.alpha = 0f;
+                preparingGroup.interactable = false;
+                preparingGroup.blocksRaycasts = false;
+                m_root.ConfigureView(entry.View);
                 entry.Controller = entry.Definition.CreateController();
                 entry.Controller.UIName = entry.Definition.UIName;
                 entry.Controller.State = entry.State;
@@ -647,6 +663,12 @@ namespace AlloyFramework.UI
             }
             else
             {
+                // 缓存界面先清除旧显示状态，防止激活后暴露尚未准备的数据。
+                var preparingGroup = entry.Instance.Instance.GetComponent<CanvasGroup>();
+                preparingGroup.alpha = 0f;
+                preparingGroup.interactable = false;
+                preparingGroup.blocksRaycasts = false;
+                m_root.ConfigureView(entry.View);
                 entry.Instance.Instance.SetActive(true);
                 BringToFront(entry);
             }
@@ -661,11 +683,8 @@ namespace AlloyFramework.UI
                 (TController)entry.Controller, CloseAsync, entry);
             entry.Handle = handle;
             entry.Controller.SetHandle(handle);
-            if (entry.Definition.BackgroundMode == UIBackgroundMode.Blur)
-            {
-                // 准备期间隐藏本界面，防止首次捕获之前出现未初始化内容。
-                canvasGroup.alpha = 0f;
-            }
+            // 所有界面的准备任务期间均保持不可见，输入也保持禁用。
+            canvasGroup.alpha = 0f;
 
             if (!entry.Created)
             {
@@ -679,11 +698,8 @@ namespace AlloyFramework.UI
             entry.Controller.InitData(data);
             await m_blur.PrepareAsync(entry, token);
             token.ThrowIfCancellationRequested();
-            if (entry.Definition.BackgroundMode == UIBackgroundMode.Blur)
-            {
-                // 恢复可见基准值，再由开场动画首帧覆盖其控制的属性。
-                canvasGroup.alpha = 1f;
-            }
+            // 恢复可见基准值，再由开场动画首帧覆盖其控制的属性。
+            canvasGroup.alpha = 1f;
 
             entry.OpenLifecycleStarted = true;
             entry.View.PrepareOpenAnimation();
@@ -860,9 +876,10 @@ namespace AlloyFramework.UI
                 return;
             }
 
-            // 逻辑顺序不随背景和前景画布之间的路由变化。
+            // 独立画布以逻辑顺序排序，相机路由不改变节点的挂载位置。
             entry.DisplayOrder = ++Instance.m_nextDisplayOrder;
             entry.SortTransform.SetAsLastSibling();
+            Instance.m_blur?.Refresh();
         }
 
         private static void SetState(UIEntry entry, UIState state)
@@ -885,6 +902,7 @@ namespace AlloyFramework.UI
                 try { entry.Controller.DisposeController(); }
                 catch (Exception exception) { AlloyDebug.Error(exception); }
             }
+            m_root?.UnregisterView(entry.View);
             entry.Instance?.Dispose();
             entry.Instance = null;
             entry.View = null;

@@ -19,6 +19,7 @@ namespace AlloyFramework.Editor
 
             GameObjectUtility.SetParentAndAlign(gameObject, menuCommand.context as GameObject);
             GameObjectUtility.EnsureUniqueNameForSibling(gameObject);
+            UIAuthoringGenerator.EnsureRootCanvas(gameObject);
 
             var rectTransform = gameObject.GetComponent<RectTransform>();
             rectTransform.anchorMin = Vector2.zero;

@@ -51,11 +51,11 @@ namespace AlloyFramework.UI
                 throw new InvalidOperationException("UI 模糊需要支持 Camera Stacking 的 URP Universal Renderer。");
             }
 
-            // 复用前景根画布绑定的预制体相机，不在每次打开时创建或销毁相机。
+            // 复用当前界面独立根画布绑定的前景相机，不在每次打开时创建或销毁相机。
             m_foreground = image.canvas.rootCanvas.worldCamera;
             if (m_foreground == null || m_foreground == source)
             {
-                throw new InvalidOperationException("ForegroundRoot 必须绑定独立的 BlurForegroundCamera。");
+                throw new InvalidOperationException("模糊界面的根 Canvas 必须绑定独立的 BlurForegroundCamera。");
             }
 
             m_foreground.enabled = false;

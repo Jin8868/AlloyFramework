@@ -7,16 +7,16 @@ using UnityEngine.UI;
 namespace AlloyFramework.UI
 {
     [DisallowMultipleComponent]
-    public sealed class UIRoot : MonoBehaviour
+    public sealed class UIRoot : MonoBehaviour, IUpdateable
     {
-        private Dictionary<UILayer, UILayerRoot> m_layers;
-        private CanvasScaler m_scaler;
-        private Canvas m_rootCanvas; // WindowRoot 的主画布。
-        private RectTransform m_windowRoot; // 全屏 UI 内容根节点。
-        private Canvas m_foregroundCanvas; // 与背景画布平级的前景根画布。
-        private CanvasScaler m_foregroundScaler; // 跟随背景参考分辨率的前景缩放器。
-        private Camera m_foregroundCamera; // 预制体中供模糊前景复用的相机。
-        private UIScreenAdaptationSystem m_screenAdaptationSystem; // 全局屏幕适配快照与目标注册系统。
+        private readonly List<Canvas> m_canvases = new List<Canvas>(); // 已打开及缓存的独立界面画布。
+        private Dictionary<UILayer, UILayerRoot> m_layers; // 八层逻辑容器。
+        private RectTransform m_windowRoot; // 不挂 Canvas 的界面分类容器。
+        private Camera m_uiCamera; // 普通界面使用的共享相机。
+        private Camera m_foregroundCamera; // 模糊边界及以上界面使用的固定相机。
+        private UIScreenAdaptationSystem m_screenAdaptationSystem; // 全局屏幕适配系统。
+        private bool m_isLandscape = true; // 当前采用的参考分辨率方向。
+        private bool m_layoutRefreshPending; // Inspector 配置改变后等待主线程刷新。
         [SerializeField] private EUIScreenOrientationMode m_orientationMode =
             EUIScreenOrientationMode.FixedLandscape; // 屏幕方向缩放策略。
         [SerializeField] private Vector2 m_landscapeReferenceResolution =
@@ -25,136 +25,163 @@ namespace AlloyFramework.UI
         [SerializeField] private Vector2 m_portraitReferenceResolution =
             new Vector2(1080f, 1920f); // 竖屏设计参考分辨率。
         [SerializeField, Range(0f, 1f)] private float m_portraitMatchWidthOrHeight = 1f; // 竖屏缩放匹配值。
+        [SerializeField, Min(0.01f)] private float m_planeDistance = 100f; // 所有界面共享的相机平面距离。
+        [SerializeField] private int m_sortingLayerID; // 所有界面共享的 Unity 排序层。
 
-        public CanvasScaler Scaler => m_scaler;
-        internal Canvas RootCanvas => m_rootCanvas;
+        /// <summary>独立 Canvas 模式没有全局缩放器。</summary>
+        [Obsolete("独立 Canvas 模式没有全局缩放器，请从目标 UIView 获取 CanvasScaler。")]
+        public CanvasScaler Scaler => null;
+        internal Canvas RootCanvas => null;
+        internal Camera UICamera => m_uiCamera;
         internal RectTransform WindowRoot => m_windowRoot;
-        internal Canvas ForegroundCanvas => m_foregroundCanvas;
         internal Camera ForegroundCamera => m_foregroundCamera;
         internal bool IsInitialized => m_layers != null;
         internal UIScreenAdaptationSystem ScreenAdaptationSystem => m_screenAdaptationSystem;
 
         internal void Initialize(GameObject prefabRoot)
         {
-            if (prefabRoot == null) throw new ArgumentNullException(nameof(prefabRoot));
-            var windowRoot = prefabRoot.transform.Find("WindowRoot");
-            if (windowRoot == null)
-                throw new InvalidOperationException("UIRoot needs a direct child named WindowRoot.");
-            var canvas = windowRoot.GetComponent<Canvas>();
-            if (canvas == null)
-                throw new InvalidOperationException("WindowRoot needs a Canvas.");
-            m_rootCanvas = canvas;
-            m_windowRoot = windowRoot as RectTransform;
-            m_scaler = windowRoot.GetComponent<CanvasScaler>();
-            if (m_scaler == null)
-                throw new InvalidOperationException("WindowRoot needs a CanvasScaler.");
-            if (canvas.renderMode == RenderMode.ScreenSpaceCamera)
+            if (prefabRoot == null)
             {
-                var camera = canvas.worldCamera;
-                if (camera == null)
-                    throw new InvalidOperationException(
-                        "WindowRoot Screen Space - Camera canvas has no Render Camera.");
-                if (camera.rect != new Rect(0f, 0f, 1f, 1f))
-                    throw new InvalidOperationException(
-                        "WindowRoot UI Camera must use a full-screen Viewport Rect.");
+                throw new ArgumentNullException(nameof(prefabRoot));
             }
-            // 前景相机由预制体管理，非模糊期间不参与渲染。
-            var foregroundCameraNode = prefabRoot.transform.Find("CameraRoot/BlurForegroundCamera");
-            m_foregroundCamera = foregroundCameraNode == null
-                ? null : foregroundCameraNode.GetComponent<Camera>();
+
+            // 每个界面是独立根画布，分类容器不能形成祖先 Canvas。
+            m_windowRoot = prefabRoot.transform.Find("WindowRoot") as RectTransform;
+            if (m_windowRoot == null)
+            {
+                throw new InvalidOperationException("UIRoot 需要名为 WindowRoot 的 RectTransform 子节点。");
+            }
+
+            var cameraNode = prefabRoot.transform.Find("CameraRoot/UICamera");
+            m_uiCamera = cameraNode == null ? null : cameraNode.GetComponent<Camera>();
+            if (m_uiCamera == null || !m_uiCamera.gameObject.activeInHierarchy ||
+                m_uiCamera.rect != new Rect(0f, 0f, 1f, 1f))
+            {
+                throw new InvalidOperationException("CameraRoot/UICamera 必须激活并使用全屏 Viewport Rect。");
+            }
+
+            var foregroundNode = prefabRoot.transform.Find("CameraRoot/BlurForegroundCamera");
+            m_foregroundCamera = foregroundNode == null ? null : foregroundNode.GetComponent<Camera>();
             if (m_foregroundCamera != null)
             {
                 m_foregroundCamera.enabled = false;
             }
 
-            var foregroundRoot = prefabRoot.transform.Find("ForegroundRoot");
-            m_foregroundCanvas = foregroundRoot == null ? null : foregroundRoot.GetComponent<Canvas>();
-            m_foregroundScaler = foregroundRoot == null ? null : foregroundRoot.GetComponent<CanvasScaler>();
-
-            var eventSystems =
-                prefabRoot.GetComponentsInChildren<UnityEngine.EventSystems.EventSystem>(true);
-            if (eventSystems.Length != 1 ||
-                !eventSystems[0].transform.IsChildOf(windowRoot) ||
+            var eventSystems = prefabRoot.GetComponentsInChildren<UnityEngine.EventSystems.EventSystem>(true);
+            if (eventSystems.Length != 1 || !eventSystems[0].transform.IsChildOf(m_windowRoot) ||
                 eventSystems[0].GetComponent<BaseInputModule>() == null)
-                throw new InvalidOperationException("WindowRoot needs exactly one EventSystem with an input module.");
-
-            var found = prefabRoot.GetComponentsInChildren<UILayerRoot>(true);
-            var layers = new Dictionary<UILayer, UILayerRoot>();
-            foreach (var layer in found)
             {
-                if (layer.transform.parent != windowRoot)
-                    throw new InvalidOperationException(
-                        $"UIRoot layer {layer.name} must be a direct child of WindowRoot.");
-                if (!Enum.IsDefined(typeof(UILayer), layer.Layer))
-                    throw new InvalidOperationException($"UIRoot has an unknown layer value on {layer.name}.");
-                if (layer.GetComponent<GraphicRaycaster>() == null)
-                    throw new InvalidOperationException($"UIRoot layer {layer.Layer} needs a GraphicRaycaster.");
-                if (layers.ContainsKey(layer.Layer))
-                    throw new InvalidOperationException($"UIRoot has duplicate {layer.Layer} layers.");
+                throw new InvalidOperationException("WindowRoot 下必须恰好有一个带输入模块的 EventSystem。");
+            }
+
+            var layers = new Dictionary<UILayer, UILayerRoot>();
+            foreach (var layer in prefabRoot.GetComponentsInChildren<UILayerRoot>(true))
+            {
+                if (layer.transform.parent != m_windowRoot || !Enum.IsDefined(typeof(UILayer), layer.Layer) ||
+                    layers.ContainsKey(layer.Layer) ||
+                    (layer.Content != layer.transform && !layer.Content.IsChildOf(layer.transform)))
+                {
+                    throw new InvalidOperationException($"UIRoot 层节点 {layer.name} 的位置或层级配置无效。");
+                }
+
+                // 包括自定义 Content 路径在内，禁止界面嵌套在分类用 Canvas 下。
+                for (var node = layer.Content.transform; node != null; node = node.parent)
+                {
+                    if (node.GetComponent<Canvas>() != null)
+                    {
+                        throw new InvalidOperationException(
+                            $"请手动移除分类容器 {node.name} 上的 Canvas、CanvasScaler 和 GraphicRaycaster。");
+                    }
+                }
+
                 layers.Add(layer.Layer, layer);
-                layer.Configure();
             }
 
             foreach (UILayer value in Enum.GetValues(typeof(UILayer)))
+            {
                 if (!layers.ContainsKey(value))
-                    throw new InvalidOperationException($"UIRoot is missing the {value} layer.");
+                {
+                    throw new InvalidOperationException($"UIRoot 缺少 {value} 层。");
+                }
+            }
+
             m_layers = layers;
             m_screenAdaptationSystem = new UIScreenAdaptationSystem(HandleScreenAdaptationChanged);
             m_screenAdaptationSystem.Initialize();
+            GameLoop.Register(this);
         }
 
-        internal void SynchronizeForegroundCanvas()
+        internal void ConfigureView(UIView view)
         {
-            // 两个根画布必须独立，嵌套 Canvas 无法只靠 Layer 切换渲染相机。
-            if (m_foregroundCanvas == null || m_foregroundScaler == null || m_foregroundCamera == null ||
-                !(m_foregroundCanvas.transform is RectTransform) ||
-                m_foregroundCanvas.transform.parent != m_windowRoot.parent ||
-                m_foregroundCanvas.rootCanvas != m_foregroundCanvas ||
-                !m_foregroundCanvas.gameObject.activeInHierarchy || !m_foregroundCamera.gameObject.activeInHierarchy)
+            var canvas = view.GetComponent<Canvas>();
+            if (canvas == null)
             {
-                throw new InvalidOperationException(
-                    "UI 模糊需要 UIRoot/ForegroundRoot 上的 Canvas 和 CanvasScaler，" +
-                    "以及 CameraRoot/BlurForegroundCamera；两个根节点及相机对象必须激活。");
+                throw new InvalidOperationException($"界面 {view.name} 根节点缺少 Canvas，请添加后重试。");
             }
 
-            // 保留 Screen Space - Camera 适配，前景配置统一跟随 WindowRoot。
-            m_foregroundCanvas.enabled = true;
-            m_foregroundCanvas.renderMode = RenderMode.ScreenSpaceCamera;
-            m_foregroundCanvas.worldCamera = m_foregroundCamera;
-            m_foregroundCanvas.planeDistance = m_rootCanvas.planeDistance;
-            m_foregroundCanvas.sortingLayerID = m_rootCanvas.sortingLayerID;
-            m_foregroundCanvas.pixelPerfect = m_rootCanvas.pixelPerfect;
-            m_foregroundCanvas.additionalShaderChannels = m_rootCanvas.additionalShaderChannels;
-            m_foregroundCanvas.targetDisplay = m_rootCanvas.targetDisplay;
-            ((RectTransform)m_foregroundCanvas.transform).pivot = m_windowRoot.pivot;
-            m_foregroundScaler.enabled = m_scaler.enabled;
-            m_foregroundScaler.uiScaleMode = m_scaler.uiScaleMode;
-            m_foregroundScaler.screenMatchMode = m_scaler.screenMatchMode;
-            m_foregroundScaler.referenceResolution = m_scaler.referenceResolution;
-            m_foregroundScaler.matchWidthOrHeight = m_scaler.matchWidthOrHeight;
-            m_foregroundScaler.scaleFactor = m_scaler.scaleFactor;
-            m_foregroundScaler.referencePixelsPerUnit = m_scaler.referencePixelsPerUnit;
-            m_foregroundCanvas.scaleFactor = m_rootCanvas.scaleFactor;
-            m_foregroundCanvas.referencePixelsPerUnit = m_rootCanvas.referencePixelsPerUnit;
+            // 缓存界面可能尚未激活，直接检查祖先组件，避免依赖未更新的 rootCanvas。
+            for (var parent = view.transform.parent; parent != null; parent = parent.parent)
+            {
+                if (parent.GetComponent<Canvas>() != null)
+                {
+                    throw new InvalidOperationException($"界面 {view.name} 必须使用独立根 Canvas。");
+                }
+            }
+
+            // 相机、深度与排序层由框架统一控制，界面自身保留内容布局。
+            canvas.enabled = true;
+            canvas.renderMode = RenderMode.ScreenSpaceCamera;
+            canvas.worldCamera = m_uiCamera;
+            canvas.planeDistance = m_planeDistance;
+            canvas.sortingLayerID = m_sortingLayerID;
+            canvas.overrideSorting = true;
+            canvas.targetDisplay = m_uiCamera.targetDisplay;
+            if (view.GetComponent<GraphicRaycaster>() == null)
+            {
+                view.gameObject.AddComponent<GraphicRaycaster>();
+            }
+
+            if (!m_canvases.Contains(canvas))
+            {
+                m_canvases.Add(canvas);
+            }
+
+            SetTreeLayer(view.transform, LayerMask.NameToLayer("UI"));
+            ApplyCanvasLayout(canvas);
+            Canvas.ForceUpdateCanvases();
         }
 
-        private void OnDestroy()
+        internal void UnregisterView(UIView view)
         {
-            m_screenAdaptationSystem?.Dispose();
-            m_screenAdaptationSystem = null;
-            m_layers = null;
+            if (view != null)
+            {
+                m_canvases.Remove(view.GetComponent<Canvas>());
+            }
+        }
+
+        internal void ValidateForegroundCamera()
+        {
+            if (m_foregroundCamera == null || m_foregroundCamera == m_uiCamera ||
+                !m_foregroundCamera.gameObject.activeInHierarchy)
+            {
+                throw new InvalidOperationException(
+                    "UI 模糊需要独立的 CameraRoot/BlurForegroundCamera，其 GameObject 必须激活。");
+            }
         }
 
         internal RectTransform GetLayer(UILayer layer)
         {
             if (m_layers == null)
-                throw new InvalidOperationException("UIRoot is not initialized.");
+            {
+                throw new InvalidOperationException("UIRoot 尚未初始化。");
+            }
+
             return m_layers[layer].Content;
         }
 
         internal Canvas GetLayerCanvas(UILayer layer)
         {
-            return m_layers[layer].GetComponent<Canvas>();
+            return null;
         }
 
         internal void RegisterScreenAdaptationTarget(IUIScreenAdaptationTarget target)
@@ -172,45 +199,100 @@ namespace AlloyFramework.UI
             m_screenAdaptationSystem?.Unregister(target);
         }
 
-        private void ApplyOrientationLayout(bool isLandscape)
+        private static void SetTreeLayer(Transform node, int layer)
         {
-            if (m_scaler == null)
+            // 普通相机只渲染 UI Layer，动态内容的首帧同样需要正确归属。
+            node.gameObject.layer = layer;
+            for (var index = 0; index < node.childCount; index++)
             {
-                m_scaler = GetComponentInChildren<CanvasScaler>(true);
+                SetTreeLayer(node.GetChild(index), layer);
+            }
+        }
+
+        private void ApplyCanvasLayout(Canvas canvas)
+        {
+            var scaler = canvas.GetComponent<CanvasScaler>();
+            if (scaler == null)
+            {
+                scaler = canvas.gameObject.AddComponent<CanvasScaler>();
             }
 
-            if (m_scaler == null)
-            {
-                return;
-            }
+            // 每个独立 Canvas 使用相同参考分辨率，修改 UIRoot 即可统一更新。
+            scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
+            scaler.screenMatchMode = CanvasScaler.ScreenMatchMode.MatchWidthOrHeight;
+            scaler.referenceResolution = m_isLandscape
+                ? m_landscapeReferenceResolution : m_portraitReferenceResolution;
+            scaler.matchWidthOrHeight = m_isLandscape
+                ? m_landscapeMatchWidthOrHeight : m_portraitMatchWidthOrHeight;
+            scaler.enabled = true;
 
-            var referenceResolution = isLandscape
-                ? m_landscapeReferenceResolution
-                : m_portraitReferenceResolution;
-            var matchWidthOrHeight = isLandscape
-                ? m_landscapeMatchWidthOrHeight
-                : m_portraitMatchWidthOrHeight;
-            m_scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
-            m_scaler.referenceResolution = referenceResolution;
-            m_scaler.matchWidthOrHeight = matchWidthOrHeight;
-            Canvas.ForceUpdateCanvases();
+            // CanvasScaler 在下一帧才处理新参数，首帧先使用相同算法同步实际比例。
+            var screenSize = canvas.renderingDisplaySize;
+            var referenceResolution = scaler.referenceResolution;
+            if (screenSize.x > 0f && screenSize.y > 0f &&
+                referenceResolution.x > 0f && referenceResolution.y > 0f)
+            {
+                var logWidth = Mathf.Log(screenSize.x / referenceResolution.x, 2f);
+                var logHeight = Mathf.Log(screenSize.y / referenceResolution.y, 2f);
+                canvas.scaleFactor = Mathf.Pow(2f, Mathf.Lerp(logWidth, logHeight, scaler.matchWidthOrHeight));
+                canvas.referencePixelsPerUnit = scaler.referencePixelsPerUnit;
+            }
         }
 
         private void HandleScreenAdaptationChanged(UIScreenAdaptationSnapshot snapshot)
         {
-            if (m_orientationMode == EUIScreenOrientationMode.FixedLandscape)
+            m_isLandscape = m_orientationMode == EUIScreenOrientationMode.FixedLandscape ||
+                (m_orientationMode == EUIScreenOrientationMode.AutoRotate &&
+                    snapshot.ScreenWidth >= snapshot.ScreenHeight);
+            ApplyRegisteredLayouts();
+        }
+
+        private void ApplyRegisteredLayouts()
+        {
+            for (var index = m_canvases.Count - 1; index >= 0; index--)
             {
-                ApplyOrientationLayout(true);
+                if (m_canvases[index] == null)
+                {
+                    m_canvases.RemoveAt(index);
+                    continue;
+                }
+
+                ApplyCanvasLayout(m_canvases[index]);
+            }
+
+            Canvas.ForceUpdateCanvases();
+        }
+
+        /// <summary>在主线程应用 Inspector 修改后的统一适配参数。</summary>
+        /// <param name="deltaTime">受缩放影响的帧间隔。</param>
+        /// <param name="unscaledDeltaTime">不受缩放影响的帧间隔。</param>
+        public void OnUpdate(float deltaTime, float unscaledDeltaTime)
+        {
+            if (!m_layoutRefreshPending || m_screenAdaptationSystem == null ||
+                !m_screenAdaptationSystem.TryGetSnapshot(out var snapshot))
+            {
                 return;
             }
 
-            if (m_orientationMode == EUIScreenOrientationMode.FixedPortrait)
-            {
-                ApplyOrientationLayout(false);
-                return;
-            }
+            m_layoutRefreshPending = false;
+            HandleScreenAdaptationChanged(snapshot);
+        }
 
-            ApplyOrientationLayout(snapshot.ScreenWidth >= snapshot.ScreenHeight);
+#if UNITY_EDITOR
+        private void OnValidate()
+        {
+            // 校验回调可能来自加载线程，只记录刷新请求，不直接修改 Canvas。
+            m_layoutRefreshPending = true;
+        }
+#endif
+
+        private void OnDestroy()
+        {
+            GameLoop.Unregister(this);
+            m_screenAdaptationSystem?.Dispose();
+            m_screenAdaptationSystem = null;
+            m_canvases.Clear();
+            m_layers = null;
         }
     }
 }

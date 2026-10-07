@@ -6,6 +6,7 @@ using AlloyFramework.UI;
 using UnityEditor;
 using UnityEditor.Compilation;
 using UnityEngine;
+using UnityEngine.UI;
 
 namespace AlloyFramework.Editor
 {
@@ -336,6 +337,34 @@ namespace AlloyFramework.Editor
             throw new InvalidOperationException("UI 生成等待记录无效，请重新生成。");
         }
 
+        /// <summary>
+        /// 为创建或生成的界面补齐根 Canvas、缩放器和射线检测组件。
+        /// </summary>
+        /// <param name="root">界面预制体或新建界面的根节点。</param>
+        internal static void EnsureRootCanvas(GameObject root)
+        {
+            // 已有 Canvas 保持原配置；新增 Canvas 的相机由运行时 UI 管理流程提供。
+            var canvas = root.GetComponent<Canvas>();
+            if (canvas == null)
+            {
+                canvas = root.AddComponent<Canvas>();
+                canvas.renderMode = RenderMode.ScreenSpaceCamera;
+            }
+
+            // 独立根 Canvas 自带缩放器，参考分辨率由运行时 UIRoot 统一应用。
+            if (root.GetComponent<CanvasScaler>() == null)
+            {
+                var scaler = root.AddComponent<CanvasScaler>();
+                scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
+            }
+
+            // 每个界面保留自己的交互入口，避免依赖父级射线检测组件。
+            if (root.GetComponent<GraphicRaycaster>() == null)
+            {
+                root.AddComponent<GraphicRaycaster>();
+            }
+        }
+
         private static void ApplyPendingGeneration(PendingGeneration pending, Type viewType)
         {
             if (viewType.FullName != pending.ViewTypeName || viewType.IsAbstract ||
@@ -361,6 +390,8 @@ namespace AlloyFramework.Editor
                     root.AddComponent(viewType);
                 }
 
+                // 根节点的渲染组件由生成流程补齐，不覆盖已有相机和排序配置。
+                EnsureRootCanvas(root);
                 PrefabUtility.SaveAsPrefabAsset(root, prefabPath);
             }
             finally
