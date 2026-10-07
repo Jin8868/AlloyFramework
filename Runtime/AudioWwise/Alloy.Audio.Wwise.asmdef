@@ -1,0 +1,6 @@
+{
+  "name": "Alloy.Audio.Wwise",
+  "rootNamespace": "AlloyFramework.Audio.Wwise",
+  "references": ["Alloy.Runtime", "UniTask", "AK.Wwise.Unity.API"],
+  "autoReferenced": false
+}

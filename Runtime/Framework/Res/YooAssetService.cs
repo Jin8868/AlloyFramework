@@ -8,7 +8,7 @@ using YooAsset;
 
 namespace AlloyFramework
 {
-    internal sealed class YooAssetService : FrameworkSystem, IAssetService, IHotUpdateService
+    internal sealed partial class YooAssetService : FrameworkSystem, IAssetService, IHotUpdateService
     {
         private readonly Dictionary<string, ResourcePackage> _packages = new Dictionary<string, ResourcePackage>();
         private readonly Dictionary<AssetKey, SharedAsset> _assets = new Dictionary<AssetKey, SharedAsset>();

@@ -7,7 +7,7 @@ using UnityEngine.SceneManagement;
 namespace AlloyFramework
 {
     [FrameworkSystem(FrameworkSystemPriority.Resource)]
-    internal sealed class ResourceSystem : FrameworkSystem, IAssetService, IHotUpdateService
+    internal sealed class ResourceSystem : FrameworkSystem, IAssetService, IHotUpdateService, IRawFileService
     {
         private IAssetService _implementation;
 
@@ -59,6 +59,32 @@ namespace AlloyFramework
 
         public UniTask UnloadUnusedAsync(string packageName, CancellationToken cancellationToken) =>
             GetImplementation().UnloadUnusedAsync(packageName, cancellationToken);
+
+        /// <summary>
+        /// 将原始文件加载请求转发给当前资源实现。
+        /// </summary>
+        /// <param name="location">资源地址。</param>
+        /// <param name="packageName">资源包名称。</param>
+        /// <param name="cancellationToken">取消本次加载的令牌。</param>
+        /// <returns>由资源实现提供的原始文件租约。</returns>
+        /// <exception cref="InvalidOperationException">资源系统尚未初始化。</exception>
+        /// <exception cref="NotSupportedException">当前资源实现不支持原始文件加载。</exception>
+        public UniTask<RawFileLease> LoadRawFileAsync(
+            string location,
+            string packageName,
+            CancellationToken cancellationToken)
+        {
+            // 包装层保留统一生命周期，具体加载能力由当前资源实现提供。
+            IAssetService implementation = GetImplementation();
+            if (!(implementation is IRawFileService rawFileService))
+            {
+                throw new NotSupportedException(
+                    $"资源实现 {implementation.GetType().FullName} 不支持原始文件加载。" +
+                    $"资源包={packageName}，资源地址={location}");
+            }
+
+            return rawFileService.LoadRawFileAsync(location, packageName, cancellationToken);
+        }
 
         public IHotUpdateProvider CreateHotUpdateProvider(string packageName)
         {

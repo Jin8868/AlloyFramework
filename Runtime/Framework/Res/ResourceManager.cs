@@ -6,7 +6,7 @@ using UnityEngine.SceneManagement;
 
 namespace AlloyFramework
 {
-    public sealed class ResourceManager
+    public sealed partial class ResourceManager
     {
         private static readonly ResourceManager Singleton = new ResourceManager();
         private IAssetService _service;

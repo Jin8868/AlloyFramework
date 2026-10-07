@@ -1,0 +1,5 @@
+{
+  "name": "Alloy.Audio.Editor",
+  "references": ["Alloy.Runtime"],
+  "includePlatforms": ["Editor"]
+}
