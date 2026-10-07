@@ -26,41 +26,49 @@ AI 没有改写任何预制体、场景、Renderer 资产或 TagManager。
 4. 业务场景必须有启用且标记为 `MainCamera` 的 URP Base 相机，使用支持 Camera Stacking 的 Universal Renderer。
    框架后端在运行时将持久化 UICamera 接入它的 Stack 并设为 Overlay，不需要把运行时预制体引用写入场景。
    Boot 或没有场景 MainCamera 时保留独立 UI 渲染，但此时不能打开需要完整场景模糊的界面。
-5. 八层 Canvas 使用与 WindowRoot 相同的 Sorting Layer，默认都为 Default。
+5. WindowRoot 与八层节点仅保留 RectTransform 分类容器，移除 Canvas、CanvasScaler、GraphicRaycaster。
+   各界面根节点使用独立 Canvas，排序层和参考分辨率由 UIRoot 统一设置。
    Source UICamera 使用全屏 Viewport、Target Display 0，关闭 Dynamic Resolution，不能设置 TargetTexture。
 6. 在 UI 生成面板把需要模糊的界面背景选为 Blur，并重新生成定义；已有定义为 None 的界面不会改变行为。
 
 使用自定义 UICamera Renderer 时，配置 `UIBlurSettings.URPRendererIndex` 为它在 URP Asset 的 Renderer List 索引。
 默认 `-1` 表示使用项目默认 Renderer。前景和源 UICamera 的 Renderer 必须一致。
 
-## 两个独立根画布与固定相机
+## 独立界面画布与固定相机
 
-预制体结构如下，ForegroundRoot 与 WindowRoot 必须平级：
+预制体结构：
 
 ```text
-UIRoot
+UIRoot（UIRoot 脚本，无 Canvas）
 ├─ CameraRoot
 │  ├─ UICamera
 │  └─ BlurForegroundCamera
-├─ WindowRoot（Canvas、CanvasScaler、原八层节点、唯一 EventSystem）
-└─ ForegroundRoot（RectTransform、Canvas、CanvasScaler，初始无业务子节点）
+└─ WindowRoot（RectTransform，无 Canvas）
+   ├─ HUD / WINDOW / POPUP / STORY / GUIDE / TOAST / LOADING / SYSTEM
+   │  └─ xxxUI（Canvas、CanvasScaler、CanvasGroup、GraphicRaycaster、UIView）
+   │     ├─ [AlloyFramework] BlurBackground（最高模糊界面运行时创建）
+   │     ├─ Background
+   │     └─ SafeAreaContent
+   └─ EventSystem（唯一）
 ```
 
-- ForegroundRoot 的 Canvas 使用 Screen Space - Camera，绑定 BlurForegroundCamera。
-- 前景相机 GameObject 保持激活，Camera 组件可以禁用；框架启动时会禁用，在模糊期间启用。
+- 八层节点保留 UILayerRoot 与原层级值；不再要求 Canvas，也不需要 ForegroundRoot。
+- UI 实例始终保留原挂载位置，框架仅切换独立根 Canvas 的 worldCamera、排序和 Unity Layer。
+- 各界面根节点必须全屏，不能在 Canvas 根节点上做位移、缩放动效或安全区收缩。
+- CanvasScaler 与 GraphicRaycaster 缺少时运行时补齐；创建菜单和生成器也会补齐。
+- UIRoot 的横竖屏参考分辨率、匹配值统一应用到所有界面，首帧立即同步比例。
+- 普通界面使用 UICamera；最高模糊边界及其上层界面使用 BlurForegroundCamera。
+- 两台相机供所有界面共享，不在打开时创建或销毁相机。
+- BlurForegroundCamera 的 GameObject 保持激活，Camera 组件默认禁用，由框架控制。
 - 前景相机使用 Overlay，与 UICamera 的 Renderer 相同；只勾选 UIBlurForeground Layer。
 - 开启 Clear Depth，关闭 Post Processing、Render Shadows、Occlusion Culling；不要添加 AudioListener。
-- 投影与 Transform 由框架跟随 UICamera，前景 CanvasScaler 跟随 WindowRoot 的参考分辨率和缩放。
-- 不复制 EventSystem 或业务界面；不创建逻辑排序占位节点；普通全屏层不创建额外前景层容器。
-- 前景 UI 实例临时进入 ForegroundRoot，UIEntry.DisplayOrder 保留逻辑顺序。
-  同层比较、置顶、缓存重开及最后一个 Blur 关闭时恢复原归属，绑定引用保持有效。
-- SafeArea 等适配组件仍处于同一个 UIRoot 下，普通全屏层的实例直接进入 ForegroundRoot；存在自定义 Content、非全屏布局或 CanvasGroup 时，
-  才镜像祖先路径的 RectTransform、激活状态和 CanvasGroup。
-- 不创建、加载或销毁前景相机；最后一个 Blur 关闭后移出相机栈、禁用相机并释放模糊纹理。
-- 业务自行放进 ForegroundRoot 的非框架 UI 不受自动路由管理，请保持该节点初始为空。
+- 投影与 Transform 由框架跟随 UICamera；UICamera 使用全屏 Viewport、Target Display 0。
+- 不添加 HiddenCamera。业务 PrepareTask 期间根 CanvasGroup 透明度为零，交互禁用。
+- PrepareTask 完成后，模糊界面等待首张纹理；捕获等待时背景单独保持连续显示。
+  开场和关闭动效阶段，背景继续继承根 CanvasGroup 透明度。
+- 显示模糊的界面不要在 Background 下铺满不透明图片，否则会盖住模糊纹理。
 
 不能只勾选 UICamera 的 UIBlurForeground 作为修复，否则当前界面可能进入背景捕获。
-仅改变嵌套 Canvas 的 Layer 并不足以完成独立 Screen Space - Camera 根画布的路由。
 
 ## 业务配置
 
@@ -112,25 +120,24 @@ UIManager.Instance.ConfigureBlur(new UIBlurSettings
     ↓ AfterRenderingTransparents
 复制到低分辨率纹理 → 横向高斯 → 纵向高斯
     ↓
-预制体前景 Overlay 相机（ForegroundRoot）：全屏模糊 RawImage + 当前界面 + 上层 UI
+预制体前景 Overlay 相机：界面内部模糊 RawImage + 当前界面 + 上层 UI
 ```
 
 不使用 ScreenCapture CPU 读回，不通过额外相机重复渲染 3D 场景。
 前景相机只绘制前景专用 Layer。捕获排除模糊 RawImage 自身，避免画面递归反馈。
 
-模糊期间框架会临时为每个管理的 UI 根节点补充独立 Canvas/GraphicRaycaster，并统一临时排序，
-使同一个 HUD/WINDOW/POPUP 层内的前后实例也能分离到两台 UI 相机。
-动态 Item 每帧由统一 LateUpdate 递归路由到所在实例的前景或背景 Layer。
-停止模糊后恢复原 Layer、Canvas 排序和相机掩码。
-补充的 Canvas/GraphicRaycaster 随 UI 实例复用，直到实例销毁时释放，避免快速关闭重开与延迟 Destroy 冲突。
-这会保留独立 Canvas 批次；复杂界面需同时观察普通模式下的 Draw Call。
+普通和模糊模式统一使用 UIEntry.DisplayOrder 排序，八层分类节点不负责渲染排序。
+动态 Item 在活动模糊期间由 LateUpdate 递归路由到所属界面的前景或背景 Layer。
+停止模糊后恢复普通相机、原 Layer 和相机掩码；Canvas 排序继续使用统一规则。
 
 ## 层级节点优化
 
-- 不创建 BlurSlot：打开和置顶顺序由 UIEntry.DisplayOrder 保存，返回原层时统一恢复物理顺序。
-- 普通全屏层直接使用 ForegroundRoot；只有自定义布局或 CanvasGroup 才按需创建 BlurLayer。
-- BlurBackground 在框架生命周期内只创建一次，关闭模糊时隐藏并清空纹理，下一次打开复用。
-- 无模糊会话时不反复排序原层；活跃会话复用排序缓冲和比较器。
+- 不创建 BlurSlot、BlurLayer 或 ForegroundRoot，不移动业务 UI 节点。
+- BlurBackground 激活时是最高模糊界面根节点的第一个子节点，与 SafeAreaContent 同级。
+- 背景只包含 RawImage 和用于捕获等待连续显示的 CanvasGroup，不额外挂 Canvas。
+- 切换模糊边界时复用并移动背景；关闭、缓存或销毁所属界面前收回至 UIRoot，隐藏并清空纹理。
+- 背景铺满根节点且不拦截射线；内容位移和缩放动效应作用在内容子节点。
+- 无活动模糊时不持续排序和遍历所有界面；打开、置顶或实例释放时才刷新普通排序。
 
 ## 性能与限制
 
@@ -141,9 +148,9 @@ UIManager.Instance.ConfigureBlur(new UIBlurSettings
 - GPU Profiler 标记为 `Alloy UI Blur`，需在目标设备实测。
 - 为覆盖运行时动态 Item，活动模糊期间每帧扫描 UI 层级；已稳定节点不重复写入 Layer，
   缓冲列表和字典复用。新增节点会产生初次记录开销，复杂列表需要观察 CPU 成本。
-- 同一模糊期间每层管理实例数限制为 500，避免临时排序值跨层。
-- 层级/Content 容器的 Mask、RectMask2D 及直接布局 UI 根节点的 LayoutGroup 暂不镜像；
-  这些组件应放在 UI 预制体内部随实例移动。
+- 每层管理实例数限制为 500，避免统一排序值跨层。缓存实例也计入数量。
+- 各界面是独立 Screen Space - Camera 根 Canvas；分类容器不用于裁剪或布局界面根节点。
+  Mask、RectMask2D 和 LayoutGroup 应放在界面内容内部。
 - 界面内部子 Canvas 必须继承排序，不支持业务子 Canvas 自行 overrideSorting 穿越其他 UI 层。
 - 额外的非框架 UI、Screen Space - Overlay Canvas、位于 UICamera 之后的其他相机内容不在捕获范围内。
 - 当前后端仅支持 URP 14 Universal Renderer，不支持 XR、分屏、多显示器、TargetTexture 或动态分辨率。
