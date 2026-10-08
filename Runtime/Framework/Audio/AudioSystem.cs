@@ -14,6 +14,7 @@ namespace AlloyFramework.Audio
         {
             cancellationToken.ThrowIfCancellationRequested();
             GameLoop.Register(AudioManager.Instance);
+            UnityEngine.Application.lowMemory += AudioManager.Instance.HandleLowMemory;
             return UniTask.CompletedTask;
         }
 
@@ -21,6 +22,7 @@ namespace AlloyFramework.Audio
         public override void Shutdown()
         {
             GameLoop.Unregister(AudioManager.Instance);
+            UnityEngine.Application.lowMemory -= AudioManager.Instance.HandleLowMemory;
             AudioManager.Instance.ShutdownImmediately();
         }
     }

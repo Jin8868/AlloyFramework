@@ -86,6 +86,7 @@ namespace AlloyFramework.Editor
                 case BuildTarget.StandaloneWindows64: return "Windows";
                 case BuildTarget.StandaloneOSX: return "Mac";
                 case BuildTarget.Android: return "Android";
+                case BuildTarget.iOS: return "iOS";
                 default: throw new PlatformNotSupportedException("构建目标尚未配置 Wwise 内容。");
             }
         }

@@ -30,6 +30,10 @@ namespace AlloyFramework.Audio
         public string Language { get; set; } = "English(US)";
         public EAudioReadinessMode DefaultReadiness { get; set; } = EAudioReadinessMode.LoadIfNeeded;
         public int PlaybackHistoryLimit { get; set; } = 256;
+        /// <summary>引用归零后的缓存保留秒数；零表示立即卸载，不受游戏时间缩放影响。</summary>
+        public float IdleCacheSeconds { get; set; } = 30;
+        /// <summary>闲置缓存及其依赖的文件大小估算预算；零表示不保留缓存，不代表 SDK 总内存。</summary>
+        public long IdleCacheBudgetBytes { get; set; } = 32L * 1024 * 1024;
     }
 
     public struct AudioPlayOptions

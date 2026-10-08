@@ -39,6 +39,8 @@ namespace AlloyFramework.Audio.Wwise
             platform = "Mac";
 #elif UNITY_ANDROID
             platform = "Android";
+#elif UNITY_IOS
+            platform = "iOS";
 #else
             throw new PlatformNotSupportedException("当前平台尚未配置 Wwise 音频内容。");
 #endif

@@ -75,7 +75,14 @@ namespace AlloyFramework.Audio.Wwise
                 { AkUnitySoundEngine.SetAndroidActivity(activity.GetRawObject()); }
 #endif
                 var platform = AkWwiseInitializationSettings.ActivePlatformSettings;
+                if (settings.Platform == "Android" && !(platform is AkAndroidSettings) ||
+                    settings.Platform == "iOS" && !(platform is AkiOSSettings))
+                {
+                    throw new InvalidOperationException(
+                        $"缺少 {settings.Platform} 的 Wwise 初始化设置，请执行框架音频的平台设置准备工具。");
+                }
                 var initialization = platform.AkInitializationSettings;
+                AlloyDebug.Log($"[Audio/Wwise] 初始化平台={settings.Platform}，设置={platform.GetType().Name}。");
                 GCHandle pin = GCHandle.Alloc(initialization);
                 m_ownsEngine = true;
                 try { Check(AkUnitySoundEngine.Init(initialization), "初始化引擎"); }
@@ -300,8 +307,13 @@ namespace AlloyFramework.Audio.Wwise
         private void UpdateSuspension()
         {
             if (!IsReady) { return; }
+#if UNITY_IOS && !UNITY_EDITOR
+            // 与官方接入一致，iOS 由原生音频会话处理后台与中断，避免重复挂起和提前唤醒。
+            return;
+#else
             if (m_systemPaused || !m_focused) { AkUnitySoundEngine.Suspend(); }
             else { AkUnitySoundEngine.WakeupFromSuspend(); }
+#endif
         }
 
         private void LoadNativeGroup(AudioContentLease content)

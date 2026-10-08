@@ -1,7 +1,8 @@
 # 框架音频与 Wwise
 
 当前安装：Wwise 2025.1.11.9262，Unity Integration 2025.1.11.4331。
-已实现 Windows Editor 接入代码；未编译、未运行播放检查、未验证 Android 或流式音乐。
+已实现 Windows/Mac 编辑器与 Android/iOS 的平台分支；Android/iOS 原生插件已接入项目。
+本次只静态核对代码和配置；未编译，移动端播放、中断恢复及流式音乐需用户真机验证。
 
 ## 运行前手动配置
 
@@ -20,7 +21,7 @@ AudioPackage 和 DefaultPackage 的初始化设置收集组。
 
 ## 生成与导出
 
-打开 Wwise 工程，点击 `Generate Checked` 或 `Generate All`。当前项目已配置 Windows 平台的
+打开 Wwise 工程，点击 `Generate Checked` 或 `Generate All`。当前项目已配置 Windows、Android、iOS 平台的
 Post-Generation Step，生成结束后自动调用项目 `ExportAudioContent.ps1`，更新清单与收集源。
 生成日志应出现“框架音频清单已导出”和“RawFile 收集目录”。导出失败时先修复错误再运行游戏。
 
@@ -84,13 +85,38 @@ Host 模式的远程 URL 提供器也需为 AudioPackage 提供对应目录，�
 
 RawFile 加载先保留资源句柄并建立文件快照。内容提供器校验 SHA256，再交付版本隔离的本地目录。
 Wwise 后端使用会话独占的原生读取目录，并对共享媒体文件引用计数。
-正在播放、暂停和淡出的声音继续持有依赖；正常 EndOfEvent 后才卸载媒体与 Bank。
+正在播放、暂停和淡出的声音继续持有依赖；正常 EndOfEvent 后释放播放引用。
+最后一个使用者退出后进入闲置缓存，再按保留时间、预算或低内存策略卸载媒体与 Bank。
 卸载失败会保留依赖至引擎终止，禁止先删除原生引擎仍可能读取的文件。
 关闭时先 Term 原生引擎，再清理目录与资源引用。
 
 Android 的 StreamingAssets 可能位于 APK 内，原始文件入口支持 jar/file 地址，
-不能直接把它们当作普通磁盘路径传给 Wwise。目前仅安装了 Windows/Mac 插件，
-Android 需安装匹配 SDK、生成 Android 内容并由用户进行真机与 Streaming 验证。
+不能直接把它们当作普通磁盘路径传给 Wwise。框架资源系统先交付可读文件，再由后端建立原生读取目录。
+Windows/Mac/Android/iOS 插件已安装；各目标平台必须生成对应内容，再由用户进行真机与 Streaming 验证。
+
+## Android / iOS 接入
+
+业务继续使用同一个 AudioManager，不添加另一套移动端播放入口。
+运行时安装器为 Android 使用 Android 清单，为 iOS 使用 iOS 清单；大小写与 Wwise 默认平台名称一致。
+编辑器模拟运行始终使用编辑器主机平台。切换构建目标不会让 Windows 编辑器加载 Android/iOS Bank。
+AudioPackage Collector 按当前构建目标收集 Android/iOS 资源；默认包持有初始化设置资产及平台引用。
+
+1. 重新加载 Wwise 源工程，确认 Platforms 包含 Android 与 iOS。
+2. 选择需要的平台执行 Generate All；当前 Windows Authoring 的 PowerShell 生成后步骤自动导出各平台内容。
+3. Unity 执行 `★AlloyFramework★/音频/准备移动平台初始化设置`。
+   通过官方 API 准备 Android.asset / iOS.asset 并挂入原初始化设置，已有设置保留。
+   官方平台设置缓存已在编辑器初始化时建立时，重新打开 Unity 可刷新缓存。
+4. 在官方 Wwise 初始化设置中检查 Android/iOS 参数，沿用已配置的采样、缓冲和音频会话策略。
+   本次不擅自设置静音开关行为、后台播放或抢占其他应用音频。
+5. 切换 Unity 构建目标，再构建 AudioPackage 与 DefaultPackage；Host 同时交付两个包的对应平台版本。
+6. 用户构建并验证真实设备：播放、流式音乐、后台返回、来电/系统中断、耳机及蓝牙切换、退出释放。
+
+Android 后端在原生 Init 前设置 Unity Activity；iOS 的后台及中断处理与官方接入一致，
+交由 Wwise 原生音频会话管理，框架不通过 Unity 焦点回调重复 Suspend/Wakeup。
+显式 PauseAudio/ResumeAudio 仍只控制指定播放实例。低内存缓存清理沿用通用 AudioSystem。
+移动端若缺少对应类型的初始化设置，启动明确报错，避免无提示地退回全局设置。
+启动日志包含 `[Audio/Wwise] 初始化平台=Android/iOS，设置=AkAndroidSettings/AkiOSSettings`。
+iOS 最终构建需在配置匹配 SDK 和 Xcode 的 macOS 环境完成；本轮没有执行构建或真机测试。
 
 ## 业务调用
 
@@ -164,6 +190,24 @@ Wwise 源工程和音频源文件仍由项目维护。
 
 修正收集规则后，EditorSimulate 退出再进入运行模式即可刷新清单。
 Offline/Host 必须重新构建并交付 AudioPackage，旧包清单不会因修改 Collector 自动更新。
+## 闲置缓存
+
+默认引用归零后保留 30 秒，闲置缓存估算预算为 32 MiB。再次播放取消闲置倒计时，
+复用已交付文件与原生加载结果；再次归零时重新计时，不受 Time.timeScale 影响。
+超预算按最久未使用顺序淘汰，常规过期检查间隔为 0.5 秒，新闲置组在下一次更新检查预算。
+低内存通知在下一次主线程更新清空所有闲置组，包括卸载父组后变为闲置的依赖组。
+播放、暂停、淡出和显式预加载持有的组、Init 及卸载失败保留的依赖不会被强行清理。
+
+预算按交付文件长度估算，包含缓存组保留的依赖，同一组去重。
+共享依赖即使仍被活跃播放持有，也保守计入缓存估算；这不是 Wwise 实际驻留内存，
+不包含解码膨胀、Streaming/Prefetch、SDK 保留内存或资源系统的磁盘下载缓存。
+不要把此预算或文件大小当作总内存硬上限。原生卸载失败的资源仍保留到 Term。
+
+初始化配置使用 AudioSettings.IdleCacheSeconds / IdleCacheBudgetBytes。
+运行中调用 ConfigureIdleCache(30, 32L * 1024 * 1024) 调整策略；任一值为零则不保留闲置缓存。
+ClearIdleCache() 手动清理闲置缓存；GetCacheInfo() 查询估算和数量。
+音频面板显示缓存组数量、估算与预算，并提供清理按钮。以上策略尚未运行验证。
+
 ## 音量控制
 
 框架提供总音量、BGM、音效和单次播放四种控制，不调用 PlayerPrefs 或存档系统。

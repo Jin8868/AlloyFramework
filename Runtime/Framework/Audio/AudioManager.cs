@@ -60,11 +60,13 @@ namespace AlloyFramework.Audio
         /// <param name="settings">当前平台设置。</param>
         /// <exception cref="InvalidOperationException">已有安装或清单无效。</exception>
         /// <exception cref="ArgumentNullException">依赖为空。</exception>
+        /// <exception cref="ArgumentOutOfRangeException">缓存保留时间或预算无效。</exception>
         public void Install(IAudioBackend backend, IAudioContentProvider provider, AudioSettings settings)
         {
             if (m_backend != null) { throw new InvalidOperationException("音频实现已安装，请先关闭。"); }
             if (backend == null || provider == null || settings == null)
             { throw new ArgumentNullException("音频安装依赖"); }
+            ValidateCacheSettings(settings.IdleCacheSeconds, settings.IdleCacheBudgetBytes);
 
             // 安装前验证循环与缺失依赖，避免共享加载相互等待。
             var definitions = new Dictionary<string, AudioContentGroup>();
@@ -84,6 +86,8 @@ namespace AlloyFramework.Audio
             m_backend = backend;
             m_provider = provider;
             m_settings = settings;
+            m_idleCacheSeconds = settings.IdleCacheSeconds;
+            m_idleCacheBudgetBytes = settings.IdleCacheBudgetBytes;
             m_sessionCancellation = new CancellationTokenSource();
             m_session++;
             m_shuttingDown = false;
@@ -358,12 +362,15 @@ namespace AlloyFramework.Audio
         }
 
         /// <summary>获取诊断用组引用摘要。</summary>
-        /// <returns>组名称、引用与就绪状态。</returns>
+        /// <returns>组名称、引用、就绪与闲置状态。</returns>
         public string[] GetGroupDescriptions()
         {
             var descriptions = new List<string>();
             foreach (GroupEntry entry in m_groups.Values)
-            { descriptions.Add($"{entry.Key}：引用={entry.Users}，原生已加载={entry.NativeLoaded}"); }
+            {
+                descriptions.Add($"{entry.Key}：引用={entry.Users}，原生已加载={entry.NativeLoaded}，"
+                    + $"闲置缓存={IsIdleGroup(entry)}");
+            }
             return descriptions.ToArray();
         }
 
@@ -394,6 +401,7 @@ namespace AlloyFramework.Audio
                 if (playback.Token.IsCancellationRequested || playback.Options.Scope?.IsDisposed == true)
                 { StopPlayback(playback, 0); }
             }
+            UpdateIdleCache();
         }
 
         /// <summary>先关闭原生引擎，再释放所有文件与引用。</summary>
@@ -452,6 +460,7 @@ namespace AlloyFramework.Audio
             { entry.Content?.Dispose(); foreach (AudioGroupLease lease in entry.Dependencies) { lease.Dispose(); } }
             m_retiredGroups.Clear();
             m_groups.Clear();
+            ResetIdleCache();
             m_initContent?.Dispose();
             m_initContent = null;
             m_events.Clear();
@@ -485,7 +494,7 @@ namespace AlloyFramework.Audio
             var entry = (GroupEntry)value;
             if (entry.Released || entry.Users <= 0) { return; }
             entry.Users--;
-            if (entry.Users == 0 && entry.LoadFinished) { UnloadGroup(entry); }
+            if (entry.Users == 0 && entry.LoadFinished) { MarkGroupUnused(entry); }
         }
 
         private async UniTask InitializeCoreAsync(long session)
@@ -520,7 +529,12 @@ namespace AlloyFramework.Audio
 
         private GroupEntry GetOrStartGroup(string key)
         {
-            if (m_groups.TryGetValue(key, out GroupEntry entry)) { entry.Users++; return entry; }
+            if (m_groups.TryGetValue(key, out GroupEntry entry))
+            {
+                entry.Users++;
+                entry.IdleSince = -1;
+                return entry;
+            }
             AudioContentGroup definition = null;
             foreach (AudioContentGroup candidate in m_provider.Manifest.Groups)
             { if (candidate.Key == key) { definition = candidate; break; } }
@@ -544,6 +558,7 @@ namespace AlloyFramework.Audio
                     { entry.Dependencies.Add(await AcquireGroupAsync(key, cancellationToken: token)); }
                 }
                 entry.Content = await provider.PrepareGroupAsync(entry.Key, m_settings, token);
+                entry.EstimatedFileBytes = EstimateGroupFiles(entry.Content);
                 token.ThrowIfCancellationRequested();
                 await backend.LoadGroupAsync(entry.Content, token);
                 entry.NativeLoaded = true;
@@ -578,7 +593,7 @@ namespace AlloyFramework.Audio
                 entry.LoadFinished = true;
                 entry.Ready.TrySetException(exception);
             }
-            if (entry.Users == 0) { UnloadGroup(entry); }
+            if (entry.Users == 0) { MarkGroupUnused(entry); }
         }
 
         private void UnloadGroup(GroupEntry entry)
@@ -769,6 +784,8 @@ namespace AlloyFramework.Audio
             internal bool LoadFinished;
             internal bool NativeLoaded;
             internal bool Released;
+            internal double IdleSince = -1; // 最后一次引用归零的真实时间，负值表示非闲置。
+            internal long EstimatedFileBytes; // 当前组文件长度估算，不冒充原生内存统计。
             internal AudioContentLease Content;
             internal readonly UniTaskCompletionSource Ready = new UniTaskCompletionSource();
             internal readonly List<AudioGroupLease> Dependencies = new List<AudioGroupLease>();

@@ -1,0 +1,7 @@
+{
+  "name": "Alloy.Audio.Wwise.Editor",
+  "rootNamespace": "AlloyFramework.Editor",
+  "references": ["AK.Wwise.Unity.API"],
+  "includePlatforms": ["Editor"],
+  "autoReferenced": false
+}

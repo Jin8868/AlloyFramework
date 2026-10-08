@@ -21,12 +21,18 @@ namespace AlloyFramework.Editor
             AudioManager manager = AudioManager.Instance;
             EditorGUILayout.LabelField("后端", manager.BackendName ?? "尚未安装");
             EditorGUILayout.LabelField("就绪", manager.IsReady.ToString());
+            AudioCacheInfo cache = manager.GetCacheInfo();
+            EditorGUILayout.LabelField("闲置缓存组", cache.IdleGroupCount.ToString());
+            EditorGUILayout.LabelField("缓存文件估算 / 预算（MiB）",
+                $"{cache.EstimatedRetainedFileBytes / 1048576.0:F2} / {cache.BudgetBytes / 1048576.0:F2}");
+            EditorGUILayout.LabelField("闲置保留秒数", cache.KeepAliveSeconds.ToString());
             m_eventKey = EditorGUILayout.TextField("Event", m_eventKey);
             using (new EditorGUI.DisabledScope(!Application.isPlaying || !manager.IsReady))
             {
                 DrawChannelVolume(manager, EAudioVolumeChannel.Master, "总音量");
                 DrawChannelVolume(manager, EAudioVolumeChannel.BGM, "BGM 音量");
                 DrawChannelVolume(manager, EAudioVolumeChannel.SFX, "音效音量");
+                if (GUILayout.Button("清理闲置音频缓存")) { manager.ClearIdleCache(); }
                 if (GUILayout.Button("播放事件") && !string.IsNullOrWhiteSpace(m_eventKey))
                 { manager.PlayAudio(m_eventKey); }
                 m_parameterKey = EditorGUILayout.TextField("全局参数", m_parameterKey);
