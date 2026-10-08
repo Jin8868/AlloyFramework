@@ -203,6 +203,8 @@ Wwise 配置包含四个 Game Parameter，范围均为 -200～0 dB，默认值�
 | AlloyInstanceVolume | AlloyBGM / AlloySFX 声音分组的 Voice Volume |
 
 后端把归一化线性音量转换为 `20 * log10(volume)`，0 映射到 -200 dB。
+四个参数的曲线使用 dB 缩放，分段设为 Linear，保持 X 输入与 Y 分贝相同。
+曲线 Flags 为 1；不要使用 Flags 为 3 的幅度缩放，否则 -20 的输入会被再次映射，接近原音量。
 实际增益同时受到总音量、分类音量、单次音量和制作侧混音设置影响。
 这四个参数由音量接口管理，请不要再通过通用 SetParameter 接口修改它们。
 

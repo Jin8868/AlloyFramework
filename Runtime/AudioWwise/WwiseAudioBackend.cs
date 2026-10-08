@@ -132,6 +132,9 @@ namespace AlloyFramework.Audio.Wwise
                 m_ownsEngine = false;
             }
             m_playbacks.Clear();
+#if UNITY_EDITOR
+            m_volumeProbes.Clear();
+#endif
             m_groups.Clear();
             m_fileUsers.Clear();
             m_emitters.Clear();
@@ -280,6 +283,9 @@ namespace AlloyFramework.Audio.Wwise
             // SDK 在这里把原生通知转入托管回调；退出泵后才执行资源回收。
             AkCallbackManager.PostCallbacks();
             AkUnitySoundEngine.RenderAudio();
+#if UNITY_EDITOR
+            PollVolumeProbes();
+#endif
             while (m_endedQueue.TryDequeue(out NativePlayback playback))
             {
                 if (!m_playbacks.Remove(playback.ID)) { continue; }
