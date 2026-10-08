@@ -38,6 +38,8 @@ namespace AlloyFramework.Audio
         public AudioEmitter Emitter { get; set; }
         public Vector3? Position { get; set; }
         public EAudioReadinessMode? ReadinessMode { get; set; }
+        /// <summary>单次播放音量，范围为 0～1；未指定时使用 1。</summary>
+        public float? Volume { get; set; }
     }
 
     public readonly struct AudioOperationResult

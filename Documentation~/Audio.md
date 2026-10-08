@@ -113,7 +113,7 @@ NavigationHomeUIController 已按这个方式改为框架调用，两个按钮�
 
 空间声音使用 `new AudioEmitter(target)` 或 PlayOptions.Position，二者不能同时指定。
 可复用 emitter 的 Switch 状态保留；不再使用时调用 emitter.Dispose，原生声音退出后注销。
-音量/RTPC 参数名、数值范围与单位由项目制作侧约定，框架不创建未经确认的 MasterVolume 参数。
+音量接口统一使用 0～1；框架音量参数及总线路由约定见下方音量控制说明。其他 RTPC 的参数名称、范围和单位仍由制作侧约定。
 同对象多次播放使用 PlayingID 级 RTPC，不能误改另一个实例。
 
 ## 人工验证与错误日志
@@ -164,3 +164,54 @@ Wwise 源工程和音频源文件仍由项目维护。
 
 修正收集规则后，EditorSimulate 退出再进入运行模式即可刷新清单。
 Offline/Host 必须重新构建并交付 AudioPackage，旧包清单不会因修改 Collector 自动更新。
+## 音量控制
+
+框架提供总音量、BGM、音效和单次播放四种控制，不调用 PlayerPrefs 或存档系统。
+分类音量初始值为 1，在当前进程中保存设置值；原生后端接受设置后才更新框架值。
+未初始化或后端拒绝操作时返回失败结果并打印 `[Audio/Volume]`，设置值保持不变。
+音量参数只允许 0～1 的有限值，越界、NaN、Infinity 会抛出 ArgumentOutOfRangeException。
+获取接口返回设置值，不查询实时响度。
+
+```csharp
+AudioManager audio = AudioManager.Instance;
+audio.SetMasterVolume(0.8f);
+audio.SetBGMVolume(0.5f);
+audio.SetSFXVolume(0.7f);
+float masterVolume = audio.GetMasterVolume();
+float bgmVolume = audio.GetBGMVolume();
+float sfxVolume = audio.GetSFXVolume();
+
+long playID = audio.PlayAudio("Play_ButtonClick", new AudioPlayOptions { Volume = 0.6f });
+audio.SetVolume(playID, 0.3f);
+if (audio.TryGetVolume(playID, out float volume))
+{
+    // 仅活跃播放可查询单次音量，声音结束后 TryGetVolume 返回 false。
+}
+```
+
+加载中的请求也可以设置单次音量，提交事件时应用最后一次设置值。
+已提交的单次音量通过 Wwise PlayingID 设置，不改变同一个 GameObject 上的其他声音。
+音量控制与资源准备、暂停、停止和作用域回收分别管理；调小音量不会主动释放资源组。
+
+Wwise 配置包含四个 Game Parameter，范围均为 -200～0 dB，默认值为 0 dB：
+
+| 参数 | 绑定目标 |
+| --- | --- |
+| AlloyMasterVolume | Main Audio Bus 的 BusVolume |
+| AlloyBGMVolume | BGM 总线的 BusVolume |
+| AlloySFXVolume | SFX 总线的 BusVolume |
+| AlloyInstanceVolume | AlloyBGM / AlloySFX 声音分组的 Voice Volume |
+
+后端把归一化线性音量转换为 `20 * log10(volume)`，0 映射到 -200 dB。
+实际增益同时受到总音量、分类音量、单次音量和制作侧混音设置影响。
+这四个参数由音量接口管理，请不要再通过通用 SetParameter 接口修改它们。
+
+现有 ButtonClick 已放入 Containers 的 AlloySFX 分组，路由到 SFX 总线，声音 GUID 保持不变。
+后续普通音效放入 AlloySFX，普通背景音乐放入 AlloyBGM，即可继承单次音量曲线及输出路由。
+独立的交互音乐层级或自行覆盖继承设置的声音，需在其根对象绑定 AlloyInstanceVolume 的
+Voice Volume 曲线，并将输出路由到对应总线。分类依据来自 Wwise 路由，不依靠 Event 名称猜测。
+
+本次修改了 Wwise 源配置：重新加载 Wwise 工程后执行 Generate All，自动导出完成后再启动 Unity。
+Offline/Host 还需要重建 AudioPackage。框架代码、Wwise 配置和新 SoundBank 应使用同一版本。
+音频面板新增三种分类滑条及活跃实例滑条，可用于用户手动检查；未自动运行编译或播放检查。
+若失败，请提供首条 `[Audio/Volume]` 或音频初始化异常，以及紧邻的 Wwise 错误。

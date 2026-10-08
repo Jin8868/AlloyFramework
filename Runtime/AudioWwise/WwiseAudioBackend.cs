@@ -9,7 +9,7 @@ using UnityEngine;
 
 namespace AlloyFramework.Audio.Wwise
 {
-    public sealed class WwiseAudioBackend : IAudioBackend, IAudioBackendDiagnostics
+    public sealed partial class WwiseAudioBackend : IAudioBackend, IAudioBackendDiagnostics, IAudioVolumeBackend
     {
         private readonly Dictionary<long, NativePlayback> m_playbacks =
             new Dictionary<long, NativePlayback>(); // 框架标识到原生播放。

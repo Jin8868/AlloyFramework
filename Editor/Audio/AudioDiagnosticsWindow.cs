@@ -24,6 +24,9 @@ namespace AlloyFramework.Editor
             m_eventKey = EditorGUILayout.TextField("Event", m_eventKey);
             using (new EditorGUI.DisabledScope(!Application.isPlaying || !manager.IsReady))
             {
+                DrawChannelVolume(manager, EAudioVolumeChannel.Master, "总音量");
+                DrawChannelVolume(manager, EAudioVolumeChannel.BGM, "BGM 音量");
+                DrawChannelVolume(manager, EAudioVolumeChannel.SFX, "音效音量");
                 if (GUILayout.Button("播放事件") && !string.IsNullOrWhiteSpace(m_eventKey))
                 { manager.PlayAudio(m_eventKey); }
                 m_parameterKey = EditorGUILayout.TextField("全局参数", m_parameterKey);
@@ -43,6 +46,11 @@ namespace AlloyFramework.Editor
                 EditorGUILayout.LabelField($"{playback.State} | {playback.EndReason} | {playback.Result.Error}");
                 EditorGUILayout.LabelField(manager.GetBackendPlaybackDescription(playback.PlayID));
                 if (!playback.Result.IsSuccess) { EditorGUILayout.HelpBox(playback.Result.Message, MessageType.Error); }
+                if (manager.TryGetVolume(playback.PlayID, out float volume))
+                {
+                    float selectedVolume = EditorGUILayout.Slider("单次音量", volume, 0, 1);
+                    if (selectedVolume != volume) { manager.SetVolume(playback.PlayID, selectedVolume); }
+                }
                 using (new EditorGUILayout.HorizontalScope())
                 {
                     if (GUILayout.Button("暂停")) { manager.PauseAudio(playback.PlayID); }
@@ -51,6 +59,13 @@ namespace AlloyFramework.Editor
                 }
             }
             EditorGUILayout.EndScrollView();
+        }
+
+        private static void DrawChannelVolume(AudioManager manager, EAudioVolumeChannel channel, string label)
+        {
+            float volume = manager.GetVolume(channel);
+            float selectedVolume = EditorGUILayout.Slider(label, volume, 0, 1);
+            if (selectedVolume != volume) { manager.SetVolume(channel, selectedVolume); }
         }
     }
 }

@@ -6,7 +6,7 @@ using UnityEngine;
 
 namespace AlloyFramework.Audio
 {
-    public sealed class AudioManager : IUpdateable
+    public sealed partial class AudioManager : IUpdateable
     {
         private static readonly AudioManager m_instance = new AudioManager(); // 唯一业务入口。
         private static long m_nextID; // 不随会话重置的进程内标识。
@@ -232,6 +232,9 @@ namespace AlloyFramework.Audio
             { throw new ArgumentException("Position 与 Emitter 不能同时指定。"); }
             if (effective.Emitter != null && !effective.Emitter.IsValid)
             { throw new ArgumentException("发声对象已释放。"); }
+            ValidateVolume(effective.Volume ?? 1);
+            if (effective.Volume.HasValue && !(m_backend is IAudioVolumeBackend))
+            { throw new NotSupportedException("后端不支持单次播放音量。"); }
             if ((effective.Emitter != null || effective.Position.HasValue) &&
                 (Capabilities & EAudioCapabilities.Spatial) == 0)
             { throw new NotSupportedException("后端不支持空间音频。"); }
@@ -241,7 +244,8 @@ namespace AlloyFramework.Audio
             {
                 ID = Interlocked.Increment(ref m_nextID), Key = key, Options = effective,
                 Callback = onStarted, Session = m_session, Token = cancellation.Token,
-                Cancellation = cancellation, Reason = EAudioEndReason.Unknown
+                Cancellation = cancellation, Reason = EAudioEndReason.Unknown,
+                Volume = effective.Volume ?? 1
             };
             m_playbacks.Add(playback.ID, playback);
             PreparePlaybackAsync(playback).Forget();
@@ -497,6 +501,8 @@ namespace AlloyFramework.Audio
                 token.ThrowIfCancellationRequested();
                 await backend.InitializeAsync(m_settings, content, session, OnEnded, token);
                 if (session != m_session) { throw new OperationCanceledException(); }
+                // 引擎就绪后同步当前会话的音量设置，失败不能继续进入业务播放。
+                ApplyChannelVolumes();
                 m_initContent = content;
                 content = null;
                 completion.TrySetResult();
@@ -632,6 +638,19 @@ namespace AlloyFramework.Audio
                 if (!result.IsSuccess) { Finish(playback, result); return; }
                 playback.State = EAudioPlaybackState.Playing;
                 playback.Started = true;
+                if (m_backend is IAudioVolumeBackend volumeBackend)
+                {
+                    // 同一次提交中按 PlayingID 设置音量，加载期间的修改在此生效。
+                    result = volumeBackend.SetPlaybackVolume(playback.ID, playback.Volume);
+                    if (!result.IsSuccess)
+                    {
+                        playback.Result = result;
+                        ReportVolumeResult(result);
+                        NotifyStart(playback, result);
+                        StopPlayback(playback, 0);
+                        return;
+                    }
+                }
                 Publish(AudioEventNames.STARTED, playback);
                 NotifyStart(playback, result);
             }
@@ -677,7 +696,7 @@ namespace AlloyFramework.Audio
         private void OnEnded(long session, long id)
         {
             if (session != m_session || !m_playbacks.TryGetValue(id, out Playback playback)) { return; }
-            Finish(playback, new AudioOperationResult());
+            Finish(playback, playback.Result);
         }
 
         private void Finish(Playback playback, AudioOperationResult result)
@@ -686,7 +705,7 @@ namespace AlloyFramework.Audio
             playback.Terminal = true;
             if (playback.PreparationFinished) { playback.Cancellation.Dispose(); }
             playback.Result = result;
-            playback.State = result.IsSuccess || playback.Started
+            playback.State = result.IsSuccess || (playback.Started && result.Error == EAudioError.Cancelled)
                 ? EAudioPlaybackState.Ended : EAudioPlaybackState.Failed;
             m_playbacks.Remove(playback.ID);
             foreach (AudioGroupLease lease in playback.Leases) { lease.Dispose(); }
@@ -770,6 +789,7 @@ namespace AlloyFramework.Audio
             internal EAudioPlaybackState State;
             internal EAudioEndReason Reason;
             internal AudioOperationResult Result;
+            internal float Volume = 1; // 单次播放音量，在资源准备完成后提交给后端。
             internal readonly List<AudioGroupLease> Leases = new List<AudioGroupLease>();
             internal readonly UniTaskCompletionSource<AudioStartResult> Start =
                 new UniTaskCompletionSource<AudioStartResult>();
