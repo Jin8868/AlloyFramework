@@ -1,59 +1,45 @@
 using System;
-using System.Reflection;
 using System.Threading;
 using Cysharp.Threading.Tasks;
 
 namespace AlloyFramework
 {
     /// <summary>
-    /// HybridCLR 业务入口加载流程骨架。安装 HybridCLR 后补充各步骤的具体实现。
+    /// 从代码准备阶段的结果创建唯一业务入口，不重复加载程序集。
     /// </summary>
     public sealed class HybridCLRGameEntryLoader : IGameEntryLoader
     {
-        public async UniTask<IGameEntry> LoadAsync(
+        private readonly GameCodePreparationResult m_result; // 早期代码准备阶段提交的结果。
+
+        /// <summary>
+        /// 绑定代码准备阶段共享的结果。
+        /// </summary>
+        /// <param name="result">代码准备结果。</param>
+        /// <exception cref="ArgumentNullException">结果为空。</exception>
+        public HybridCLRGameEntryLoader(GameCodePreparationResult result)
+        {
+            m_result = result ?? throw new ArgumentNullException(nameof(result));
+        }
+
+        /// <summary>
+        /// 在框架系统初始化后创建已加载程序集中的业务入口。
+        /// </summary>
+        /// <param name="context">框架上下文。</param>
+        /// <param name="cancellationToken">取消启动的令牌。</param>
+        /// <returns>唯一业务入口。</returns>
+        /// <exception cref="InvalidOperationException">代码准备未成功完成。</exception>
+        public UniTask<IGameEntry> LoadAsync(
             FrameworkContext context,
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (!m_result.IsCompleted || m_result.RuntimeAssembly == null)
+            {
+                throw new InvalidOperationException("业务代码尚未准备完成，不能创建业务入口。");
+            }
 
-            // 第一步：通过资源系统确保本地基础 DLL 或远程最新 DLL 已经就绪。
-            await PrepareCodeResourcesAsync(context, cancellationToken);
-
-            // 第二步：读取裁剪后的 AOT DLL，并调用 HybridCLR 补充泛型元数据。
-            await LoadAotMetadataAsync(context, cancellationToken);
-
-            // 第三步：读取业务运行时 DLL 字节并动态加载程序集。
-            var runtimeAssembly = await LoadRuntimeAssemblyAsync(context, cancellationToken);
-            cancellationToken.ThrowIfCancellationRequested();
-
-            return GameEntryActivator.Create(runtimeAssembly);
-        }
-
-        private static UniTask PrepareCodeResourcesAsync(
-            FrameworkContext context,
-            CancellationToken cancellationToken)
-        {
-            throw NotImplemented(nameof(PrepareCodeResourcesAsync));
-        }
-
-        private static UniTask LoadAotMetadataAsync(
-            FrameworkContext context,
-            CancellationToken cancellationToken)
-        {
-            throw NotImplemented(nameof(LoadAotMetadataAsync));
-        }
-
-        private static UniTask<Assembly> LoadRuntimeAssemblyAsync(
-            FrameworkContext context,
-            CancellationToken cancellationToken)
-        {
-            throw NotImplemented(nameof(LoadRuntimeAssemblyAsync));
-        }
-
-        private static NotSupportedException NotImplemented(string step)
-        {
-            return new NotSupportedException(
-                $"HybridCLR 尚未安装，入口加载步骤 {step} 尚未实现。");
+            // 只消费成功提交的结果，避免在配置初始化后才开始加载代码。
+            return UniTask.FromResult(GameEntryActivator.Create(m_result.RuntimeAssembly));
         }
     }
 }

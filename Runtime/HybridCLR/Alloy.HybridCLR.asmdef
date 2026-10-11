@@ -1,0 +1,10 @@
+{
+  "name": "Alloy.HybridCLR",
+  "rootNamespace": "AlloyFramework.HybridCLR",
+  "references": ["Alloy.Runtime", "HybridCLR.Runtime", "UniTask"],
+  "autoReferenced": false,
+  "defineConstraints": ["ALLOYHYBRIDCLR"],
+  "versionDefines": [
+    {"name": "com.code-philosophy.hybridclr", "expression": "8.14.1", "define": "ALLOYHYBRIDCLR"}
+  ]
+}

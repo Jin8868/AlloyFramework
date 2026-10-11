@@ -14,6 +14,7 @@ namespace AlloyFramework
         private static readonly List<FrameworkSystem> InitializedSystems =
             new List<FrameworkSystem>();
 
+        private static IGameCodePreparation m_codePreparation; // 资源就绪后执行的可选代码准备服务。
         private static FrameworkContext _context;
         private static IGameEntryLoader _gameEntryLoader;
         private static IGameEntry _gameEntry;
@@ -58,6 +59,24 @@ namespace AlloyFramework
             _gameEntryLoader = gameEntryLoader;
         }
 
+        /// <summary>
+        /// 在框架启动前注入可选的业务代码准备服务。
+        /// </summary>
+        /// <param name="codePreparation">代码准备服务。</param>
+        /// <exception cref="ArgumentNullException">服务为空。</exception>
+        /// <exception cref="InvalidOperationException">已开始启动或服务已注入。</exception>
+        public static void SetGameCodePreparation(IGameCodePreparation codePreparation)
+        {
+            if (codePreparation == null)
+            {
+                throw new ArgumentNullException(nameof(codePreparation));
+            }
+            if (_isStarting || _isInitialized || m_codePreparation != null)
+            {
+                throw new InvalidOperationException("代码准备服务必须在框架启动前且只注入一次。");
+            }
+            m_codePreparation = codePreparation;
+        }
         public static TService GetRequired<TService>() where TService : class
         {
             if (_context == null)
@@ -81,6 +100,7 @@ namespace AlloyFramework
             _startupScreen = null;
             _context = null;
             _gameEntryLoader = null;
+            m_codePreparation = null;
             _gameEntry = null;
             _isStarting = false;
             _isInitialized = false;
@@ -218,6 +238,11 @@ namespace AlloyFramework
                         await system.InitializeAsync(_context, cancellationToken);
                         _context.Register(system);
                         InitializedSystems.Add(system);
+                        // 资源系统已经绑定，后续配置系统必须看到本次加载的业务代码。
+                        if (system is ResourceSystem && m_codePreparation != null)
+                        {
+                            await m_codePreparation.PrepareAsync(_context, cancellationToken);
+                        }
                         FrameworkStartupLog.Step($"框架系统 {systemName}", systemStartedAt);
                     }
                     catch
