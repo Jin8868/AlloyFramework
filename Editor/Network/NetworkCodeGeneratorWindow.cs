@@ -8,7 +8,7 @@ namespace AlloyFramework.Net.Editor
 {
     internal sealed class NetworkCodeGeneratorWindow : EditorWindow
     {
-        private NetworkGenerationSettings m_settings; // 项目生成配置。
+        private NetworkGenerationSettings m_settings; // 当前窗口的生成参数，不读写配置文件。
         private readonly HashSet<string> m_selected = new HashSet<string>(StringComparer.Ordinal); // 实际勾选集合。
         private string[] m_sources = Array.Empty<string>(); // 搜索前的完整协议列表。
         private string m_search = ""; // 文件名及相对路径搜索词。
@@ -24,8 +24,7 @@ namespace AlloyFramework.Net.Editor
         {
             try
             {
-                m_settings = NetworkGenerationSettings.Load();
-                m_selected.UnionWith(m_settings.SelectedFiles ?? Array.Empty<string>());
+                m_settings = new NetworkGenerationSettings();
                 RefreshSources();
             }
             catch (Exception exception) { ShowFailure(exception); }
@@ -34,6 +33,7 @@ namespace AlloyFramework.Net.Editor
         private void OnGUI()
         {
             if (m_settings == null) { EditorGUILayout.HelpBox(m_status, m_statusType); return; }
+            EditorGUILayout.HelpBox("扫描 .proto 生成；下方参数仅在本次窗口中生效。", MessageType.Info);
             EditorGUI.BeginChangeCheck();
             m_settings.ProtoRoot = EditorGUILayout.TextField("Proto 根目录", m_settings.ProtoRoot);
             m_settings.ProtocPath = EditorGUILayout.TextField("protoc 34.1", m_settings.ProtocPath);
@@ -49,7 +49,6 @@ namespace AlloyFramework.Net.Editor
             if (EditorGUI.EndChangeCheck()) m_plan = null;
             EditorGUILayout.BeginHorizontal();
             if (GUILayout.Button("刷新文件")) RunAction(RefreshSources);
-            if (GUILayout.Button("保存配置")) RunAction(SaveSettings);
             EditorGUILayout.EndHorizontal();
 
             m_search = EditorGUILayout.TextField("搜索文件名或路径", m_search);
@@ -89,15 +88,9 @@ namespace AlloyFramework.Net.Editor
             m_plan = null;
         }
 
-        private void SaveSettings()
-        {
-            m_settings.SelectedFiles = m_selected.OrderBy(path => path, StringComparer.Ordinal).ToArray();
-            m_settings.Save();
-        }
-
         private void Analyze()
         {
-            SaveSettings();
+            m_settings.SelectedFiles = m_selected.OrderBy(path => path, StringComparer.Ordinal).ToArray();
             m_plan = NetworkCodeGenerator.Analyze(m_settings);
             m_status = m_plan.RequiredSelection.Count == 0
                 ? "依赖有效；只重写勾选协议，注册表保留其他已生成协议。"

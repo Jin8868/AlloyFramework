@@ -18,7 +18,7 @@ namespace AlloyFramework.Net.Editor
         public string OptionsRoot = "Packages/com.alloy.framework/Editor/Network/Protocol";
         /// <summary>工具拥有的生成目录。</summary>
         public string OutputRoot = "Assets/Scripts/Protocol/Generated";
-        /// <summary>客户端命名空间。</summary>
+        /// <summary>协议注册表的默认命名空间。</summary>
         public string GeneratedNamespace = "Game.Protocol";
         /// <summary>分部网络服务的业务命名空间。</summary>
         public string ServiceNamespace = "Game.Network";
@@ -32,21 +32,6 @@ namespace AlloyFramework.Net.Editor
         public string[] SelectedFiles = Array.Empty<string>();
 
         internal static string ProjectRoot => Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
-        internal static string ConfigPath => Path.Combine(ProjectRoot, "Protocol/NetworkGeneration.json");
-
-        internal static NetworkGenerationSettings Load()
-        {
-            return File.Exists(ConfigPath)
-                ? JsonUtility.FromJson<NetworkGenerationSettings>(File.ReadAllText(ConfigPath))
-                : new NetworkGenerationSettings();
-        }
-
-        internal void Save()
-        {
-            Directory.CreateDirectory(Path.GetDirectoryName(ConfigPath));
-            File.WriteAllText(ConfigPath, JsonUtility.ToJson(this, true) + "\n");
-        }
-
         internal static string Resolve(string path)
         {
             if (string.IsNullOrWhiteSpace(path) || Path.IsPathRooted(path) || path.Contains("\""))
