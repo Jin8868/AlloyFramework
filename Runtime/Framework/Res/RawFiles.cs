@@ -89,8 +89,12 @@ namespace AlloyFramework
             {
                 using (UnityWebRequest request = UnityWebRequest.Get(location))
                 {
-                    request.SendWebRequest();
-                    while (!request.isDone) { await UniTask.Yield(PlayerLoopTiming.Update, cancellationToken); }
+                    // 显式持有请求操作，通过逐帧等待保留统一的取消和错误处理。
+                    UnityWebRequestAsyncOperation requestOperation = request.SendWebRequest();
+                    while (!requestOperation.isDone)
+                    {
+                        await UniTask.Yield(PlayerLoopTiming.Update, cancellationToken);
+                    }
                     if (request.result != UnityWebRequest.Result.Success) { throw new IOException(request.error); }
                     cancellationToken.ThrowIfCancellationRequested();
                     return RawFileLease.Create(request.downloadHandler.data);
