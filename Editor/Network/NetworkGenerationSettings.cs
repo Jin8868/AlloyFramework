@@ -9,15 +9,15 @@ namespace AlloyFramework.Net.Editor
     internal sealed class NetworkGenerationSettings
     {
         /// <summary>业务协议根目录。</summary>
-        public string ProtoRoot = "Protocol/Proto";
+        public readonly string ProtoRoot = "Protocol/Proto";
         /// <summary>固定版本生成器。</summary>
-        public string ProtocPath = "Tools/Protobuf/Windows/34.1/bin/protoc.exe";
+        public readonly string ProtocPath = "Tools/Protobuf/Windows/34.1/bin/protoc.exe";
         /// <summary>标准协议目录。</summary>
-        public string StandardInclude = "Tools/Protobuf/Windows/34.1/include";
+        public readonly string StandardInclude = "Tools/Protobuf/Windows/34.1/include";
         /// <summary>框架 option 根目录。</summary>
-        public string OptionsRoot = "Packages/com.alloy.framework/Editor/Network/Protocol";
+        public readonly string OptionsRoot = "Packages/com.alloy.framework/Editor/Network/Protocol";
         /// <summary>工具拥有的生成目录。</summary>
-        public string OutputRoot = "Assets/Scripts/Protocol/Generated";
+        public readonly string OutputRoot = "Assets/Scripts/Protocol/Generated";
         /// <summary>协议注册表的默认命名空间。</summary>
         public string GeneratedNamespace = "Game.Protocol";
         /// <summary>分部网络服务的业务命名空间。</summary>
@@ -25,7 +25,7 @@ namespace AlloyFramework.Net.Editor
         /// <summary>手写分部文件和生成服务共同所属的程序集。</summary>
         public string ServiceAssembly = "Game.Runtime";
         /// <summary>手写业务处理骨架目录，已有实现不整体覆盖。</summary>
-        public string BusinessServiceRoot = "Assets/Scripts/Runtime/Network/Services";
+        public readonly string BusinessServiceRoot = "Assets/Scripts/Runtime/Network/Services";
         /// <summary>线上版本。</summary>
         public int ProtocolVersion = 1;
         /// <summary>勾选集合；搜索过滤不改变它。</summary>
