@@ -20,6 +20,11 @@ namespace AlloyFramework
         public override async UniTask InitializeAsync(FrameworkContext context, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            // 在任何包初始化前固定发布信息，保证代码、资源和音频属于同一次发布。
+            if (ResourceSettings.StartupPreparation != null)
+            {
+                await ResourceSettings.StartupPreparation(cancellationToken);
+            }
             YooAssets.Initialize();
 
             try
@@ -96,30 +101,44 @@ namespace AlloyFramework
 
             var operationStartedAt = FrameworkStartupLog.Now;
             var operation = package.InitializeAsync(parameters);
-            await UniTask.WaitUntil(() => operation.IsDone, cancellationToken: cancellationToken);
+            await YooAssetStartupOperations.WaitAsync(operation, cancellationToken);
             if (operation.Status != EOperationStatus.Succeed)
                 throw new InvalidOperationException($"Failed to initialize package {packageName}: {operation.Error}");
             if (logStartup)
                 FrameworkStartupLog.Step($"初始化资源包 {packageName}", operationStartedAt);
 
             var versionStartedAt = FrameworkStartupLog.Now;
-            var version = package.RequestPackageVersionAsync();
-            await UniTask.WaitUntil(() => version.IsDone, cancellationToken: cancellationToken);
-            if (version.Status != EOperationStatus.Succeed)
-                throw new InvalidOperationException(
-                    $"Failed to request package version {packageName}: {version.Error}");
+            string packageVersion;
+            if (ResourceSettings.PlayMode == ResourcePlayMode.Host && ResourceSettings.PackageVersionProvider != null)
+            {
+                packageVersion = ResourceSettings.PackageVersionProvider(packageName);
+            }
+            else
+            {
+                var version = package.RequestPackageVersionAsync();
+                await YooAssetStartupOperations.WaitAsync(version, cancellationToken);
+                if (version.Status != EOperationStatus.Succeed)
+                    throw new InvalidOperationException(
+                        $"Failed to request package version {packageName}: {version.Error}");
+                packageVersion = version.PackageVersion;
+            }
             if (logStartup)
                 FrameworkStartupLog.Step($"获取资源包 {packageName} 版本", versionStartedAt);
 
             var manifestStartedAt = FrameworkStartupLog.Now;
-            var manifest = package.UpdatePackageManifestAsync(version.PackageVersion);
-            await UniTask.WaitUntil(() => manifest.IsDone, cancellationToken: cancellationToken);
+            var manifest = package.UpdatePackageManifestAsync(packageVersion);
+            await YooAssetStartupOperations.WaitAsync(manifest, cancellationToken);
             if (manifest.Status != EOperationStatus.Succeed)
                 throw new InvalidOperationException(
-                    $"Failed to activate package manifest {packageName}/{version.PackageVersion}: {manifest.Error}");
+                    $"Failed to activate package manifest {packageName}/{packageVersion}: {manifest.Error}");
             if (logStartup)
                 FrameworkStartupLog.Step($"激活资源包 {packageName} 清单", manifestStartedAt);
 
+            // Host 模式先下载固定清单里的缺失文件，再允许业务加载资源或 DLL。
+            if (ResourceSettings.PlayMode == ResourcePlayMode.Host)
+            {
+                await YooAssetStartupOperations.DownloadAsync(package, cancellationToken);
+            }
             _packages.Add(packageName, package);
             if (packageName == ResourceSettings.DefaultPackageName)
                 YooAssets.SetDefaultPackage(package);
