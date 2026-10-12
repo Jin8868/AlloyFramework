@@ -6,7 +6,7 @@ namespace AlloyFramework.Editor
 {
     internal static class WwiseAudioPlatformSettingsBuilder
     {
-        [MenuItem("★AlloyFramework★/音频/准备移动平台初始化设置")]
+        [MenuItem("★AlloyFramework★/出包/构建配置/配置 Wwise 移动平台初始化")]
         private static void PrepareSettings()
         {
             if (Application.isPlaying)

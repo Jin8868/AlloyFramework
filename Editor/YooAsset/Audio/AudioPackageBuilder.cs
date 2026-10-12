@@ -8,7 +8,7 @@ namespace AlloyFramework.Editor
 {
     internal static class AudioPackageBuilder
     {
-        [MenuItem("★AlloyFramework★/音频/打包音频资源包")]
+        [MenuItem("★AlloyFramework★/出包/单项操作/单独构建音频资源包")]
         private static void BuildAudioPackage()
         {
             if (Application.isPlaying)
