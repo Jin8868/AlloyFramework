@@ -40,7 +40,7 @@ namespace AlloyFramework
         /// </summary>
         public static void DestroyStartupScreen()
         {
-            var startupScreen = _startupScreen;
+            var startupScreen = _startupScreen != null ? _startupScreen : GameObject.Find(StartupScreenObjectName);
             _startupScreen = null;
             if (startupScreen != null) UnityEngine.Object.Destroy(startupScreen);
         }
@@ -95,6 +95,7 @@ namespace AlloyFramework
 
             ResetObjectPools();
 
+            _startupCancellation?.Cancel();
             _startupCancellation?.Dispose();
             _startupCancellation = null;
             _startupScreen = null;
@@ -147,6 +148,7 @@ namespace AlloyFramework
 
             _isShuttingDown = true;
             _startupCancellation?.Cancel();
+            StartupLoading.Cancel();
 
             if (_isGameEntryStarted)
             {
@@ -174,6 +176,7 @@ namespace AlloyFramework
 
             _isShuttingDown = true;
             _startupCancellation?.Cancel();
+            StartupLoading.Cancel();
             _isGameEntryStarted = false;
             ShutdownSystems();
         }
@@ -219,8 +222,11 @@ namespace AlloyFramework
 
             try
             {
+                // 先等待内置展示真正绘制，版本检查和资源初始化不能早于此处。
+                await StartupLoading.BeginAsync(cancellationToken);
                 var discoveryStartedAt = FrameworkStartupLog.Now;
                 var descriptors = DiscoverFrameworkSystems();
+                StartupLoading.ConfigureSteps(descriptors.Count + (m_codePreparation == null ? 0 : 1) + 2);
                 FrameworkStartupLog.Step($"发现 {descriptors.Count} 个框架系统", discoveryStartedAt);
 
                 for (var index = 0; index < descriptors.Count; index++)
@@ -233,15 +239,23 @@ namespace AlloyFramework
                     FrameworkStartupLog.Info($"开始初始化框架系统 ({index + 1}/{descriptors.Count}): {systemName}");
                     try
                     {
+                        StartupLoading.BeginFrameworkStep(
+                            EStartupLoadingStage.InitializingSystems, "初始化 " + descriptor.SystemType.Name);
                         SystemInitializing?.Invoke(descriptor.SystemType, index + 1, descriptors.Count);
                         var system = CreateSystem(descriptor.SystemType);
                         await system.InitializeAsync(_context, cancellationToken);
                         _context.Register(system);
                         InitializedSystems.Add(system);
+                        cancellationToken.ThrowIfCancellationRequested();
+                        StartupLoading.CompleteFrameworkStep();
                         // 资源系统已经绑定，后续配置系统必须看到本次加载的业务代码。
                         if (system is ResourceSystem && m_codePreparation != null)
                         {
+                            StartupLoading.BeginFrameworkStep(
+                                EStartupLoadingStage.PreparingGameCode, "准备游戏代码");
                             await m_codePreparation.PrepareAsync(_context, cancellationToken);
+                            cancellationToken.ThrowIfCancellationRequested();
+                            StartupLoading.CompleteFrameworkStep();
                         }
                         FrameworkStartupLog.Step($"框架系统 {systemName}", systemStartedAt);
                     }
@@ -256,7 +270,10 @@ namespace AlloyFramework
                 var callbackStartedAt = FrameworkStartupLog.Now;
                 try
                 {
+                    StartupLoading.BeginFrameworkStep(EStartupLoadingStage.InitializingSystems, "完成框架初始化回调");
                     Initialized?.Invoke();
+                    cancellationToken.ThrowIfCancellationRequested();
+                    StartupLoading.CompleteFrameworkStep();
                     FrameworkStartupLog.Step("初始化回调", callbackStartedAt);
                 }
                 catch
@@ -274,10 +291,13 @@ namespace AlloyFramework
                 FrameworkStartupLog.Info($"开始加载业务入口: {_gameEntryLoader.GetType().FullName}");
                 try
                 {
+                    StartupLoading.BeginFrameworkStep(EStartupLoadingStage.PreparingGameCode, "加载业务入口");
                     _gameEntry = await _gameEntryLoader.LoadAsync(_context, cancellationToken);
                     if (_gameEntry == null)
                         throw new InvalidOperationException(
                             $"Game entry loader {_gameEntryLoader.GetType().FullName} returned null.");
+                    cancellationToken.ThrowIfCancellationRequested();
+                    StartupLoading.CompleteFrameworkStep();
                     FrameworkStartupLog.Step("加载业务入口", loaderStartedAt);
                 }
                 catch
@@ -286,6 +306,9 @@ namespace AlloyFramework
                     throw;
                 }
 
+                // 框架只交出控制权，不关闭界面；业务自行决定关闭或继续加载。
+                StartupLoading.HandOver();
+                await UniTask.NextFrame(cancellationToken);
                 _isGameEntryStarted = true;
                 var gameEntryStartedAt = FrameworkStartupLog.Now;
                 FrameworkStartupLog.Info($"开始执行业务入口: {_gameEntry.GetType().FullName}");
@@ -309,6 +332,8 @@ namespace AlloyFramework
             }
             catch (Exception exception)
             {
+                // 在资源清理前冻结状态，保留完全内置的错误界面。
+                StartupLoading.Fail(exception);
                 FrameworkStartupLog.Failure("框架启动", startupStartedAt);
                 await ShutdownAsync();
                 StartupFailed?.Invoke(exception);

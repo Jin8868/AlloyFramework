@@ -64,6 +64,7 @@ namespace AlloyFramework.HybridCLR
 #else
                 // 在任何不可逆的程序集加载前完成全部文件的哈希和身份校验。
                 await ResourceManager.Instance.EnsurePackageAsync(CODEPACKAGE, cancellationToken);
+                StartupLoading.ReportOperation(EStartupLoadingStage.PreparingGameCode, "校验游戏代码清单" );
                 HotUpdateCodeManifest manifest;
                 using (RawFileLease lease = await ResourceManager.Instance.LoadRawFileAsync(
                     MANIFESTLOCATION, CODEPACKAGE, cancellationToken))
@@ -77,6 +78,7 @@ namespace AlloyFramework.HybridCLR
                 m_result.BaselineID = manifest.BaselineID;
 
                 // 元数据与 DLL 加载都不能回滚，失败后必须重启进程。
+                StartupLoading.ReportOperation(EStartupLoadingStage.PreparingGameCode, "补充 AOT 元数据" );
                 m_result.RequiresRestart = true;
                 foreach (HotUpdateCodeFile metadata in manifest.Metadata)
                 {
@@ -89,6 +91,7 @@ namespace AlloyFramework.HybridCLR
                             $"补充元数据失败：{metadata.AssemblyName}，基线={manifest.BaselineID}，错误={error}");
                     }
                 }
+                StartupLoading.ReportOperation(EStartupLoadingStage.PreparingGameCode, "加载业务程序集" );
                 foreach (HotUpdateCodeFile assemblyFile in manifest.Assemblies)
                 {
                     if (TryFindLoadedAssembly(assemblyFile.AssemblyName) != null)
@@ -108,6 +111,7 @@ namespace AlloyFramework.HybridCLR
                 }
 #endif
                 cancellationToken.ThrowIfCancellationRequested();
+                StartupLoading.ReportOperation(EStartupLoadingStage.PreparingGameCode, "安装业务代码" );
                 InstallRuntime(m_result.RuntimeAssembly);
                 m_result.IsCompleted = true;
                 Debug.Log($"[HybridCLR] 业务代码准备完成：{m_runtimeAssemblyName}，版本={m_result.ReleaseID}");

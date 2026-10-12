@@ -23,6 +23,7 @@ namespace AlloyFramework
             // 在任何包初始化前固定发布信息，保证代码、资源和音频属于同一次发布。
             if (ResourceSettings.StartupPreparation != null)
             {
+                StartupLoading.ReportOperation(EStartupLoadingStage.CheckingRelease, "检查发布版本" );
                 await ResourceSettings.StartupPreparation(cancellationToken);
             }
             YooAssets.Initialize();
@@ -57,6 +58,9 @@ namespace AlloyFramework
 
         private async UniTask InitializePackageAsync(string packageName, CancellationToken cancellationToken)
         {
+            // 准备状态不依赖业务 UI，错误始终能定位到实际资源包。
+            StartupLoading.ReportPackage(EStartupLoadingStage.PreparingPackages,
+                "初始化资源包 " + packageName, packageName);
             var logStartup = FrameworkBootstrap.IsStarting;
             var packageStartedAt = FrameworkStartupLog.Now;
             var package = YooAssets.TryGetPackage(packageName) ?? YooAssets.CreatePackage(packageName);
@@ -107,6 +111,8 @@ namespace AlloyFramework
             if (logStartup)
                 FrameworkStartupLog.Step($"初始化资源包 {packageName}", operationStartedAt);
 
+            StartupLoading.ReportPackage(EStartupLoadingStage.PreparingPackages,
+                "获取资源包版本 " + packageName, packageName, 1f / 3f);
             var versionStartedAt = FrameworkStartupLog.Now;
             string packageVersion;
             if (ResourceSettings.PlayMode == ResourcePlayMode.Host && ResourceSettings.PackageVersionProvider != null)
@@ -125,6 +131,8 @@ namespace AlloyFramework
             if (logStartup)
                 FrameworkStartupLog.Step($"获取资源包 {packageName} 版本", versionStartedAt);
 
+            StartupLoading.ReportPackage(EStartupLoadingStage.PreparingPackages,
+                "激活资源包清单 " + packageName, packageName, 2f / 3f);
             var manifestStartedAt = FrameworkStartupLog.Now;
             var manifest = package.UpdatePackageManifestAsync(packageVersion);
             await YooAssetStartupOperations.WaitAsync(manifest, cancellationToken);
