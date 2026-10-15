@@ -66,6 +66,34 @@ namespace AlloyFramework
             try { File.Copy(sourcePath, path, false); return new RawFileLease(directory, path); }
             catch { Directory.Delete(directory, true); throw; }
         }
+
+        internal static async UniTask<RawFileLease> CopyAsync(string sourcePath,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            string directory = Path.Combine(Application.persistentDataPath,
+                "AlloyRawFiles", Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+            string path = Path.Combine(directory, "content.raw");
+            try
+            {
+                // 大视频按块异步复制，避免主线程 File.Copy 阻塞界面，也不整体分配 byte[]。
+                using (var source = new FileStream(sourcePath, FileMode.Open, FileAccess.Read,
+                    FileShare.Read, 65536, FileOptions.Asynchronous | FileOptions.SequentialScan))
+                using (var destination = new FileStream(path, FileMode.CreateNew, FileAccess.Write,
+                    FileShare.None, 65536, FileOptions.Asynchronous))
+                {
+                    await source.CopyToAsync(destination, 65536, cancellationToken);
+                }
+                cancellationToken.ThrowIfCancellationRequested();
+                return new RawFileLease(directory, path);
+            }
+            catch
+            {
+                Directory.Delete(directory, true);
+                throw;
+            }
+        }
     }
 
     public sealed partial class ResourceManager
@@ -103,7 +131,7 @@ namespace AlloyFramework
 
             if (Path.IsPathRooted(location))
             {
-                return RawFileLease.Copy(location);
+                return await RawFileLease.CopyAsync(location, cancellationToken);
             }
 
             if (!(GetService() is IRawFileService rawFileService))
@@ -134,7 +162,8 @@ namespace AlloyFramework
                 cancellationToken.ThrowIfCancellationRequested();
                 if (handle.Status != YooAsset.EOperationStatus.Succeed) { throw new IOException(handle.LastError); }
                 string physicalPath = handle.GetRawFilePath();
-                if (File.Exists(physicalPath)) { return RawFileLease.Copy(physicalPath); }
+                if (File.Exists(physicalPath))
+                    return await RawFileLease.CopyAsync(physicalPath, cancellationToken);
                 byte[] bytes = handle.GetRawFileData();
                 if (bytes == null) { throw new IOException($"原始文件数据为空：{location}"); }
                 return RawFileLease.Create(bytes);

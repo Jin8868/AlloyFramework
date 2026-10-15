@@ -196,7 +196,7 @@ namespace AlloyFramework.Audio.Wwise
             if (emitter != null && !emitter.IsValid) { return Error("空间发声目标已销毁。"); }
             GameObject target = GetEmitter(emitter);
             var playback = new NativePlayback
-            { ID = playID, Session = m_session, Backend = this, Emitter = emitter };
+            { ID = playID, Session = m_session, Backend = this, Emitter = emitter, EventKey = key };
             playback.PlayingID = AkUnitySoundEngine.PostEvent(key, target,
                 (uint)AkCallbackType.AK_EndOfEvent, m_callback, playback);
             if (playback.PlayingID == AkUnitySoundEngine.AK_INVALID_PLAYING_ID)
@@ -466,6 +466,7 @@ namespace AlloyFramework.Audio.Wwise
             internal uint PlayingID;
             internal WwiseAudioBackend Backend;
             internal AudioEmitter Emitter;
+            internal string EventKey; // 提交时的事件名称，定位时与 Playing ID 一起使用。
         }
 
         private sealed class NativeGroup
