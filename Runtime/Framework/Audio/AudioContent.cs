@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using Cysharp.Threading.Tasks;
-using UnityEngine;
 
 namespace AlloyFramework.Audio
 {
@@ -87,8 +86,11 @@ namespace AlloyFramework.Audio
 
     public sealed class AudioContentLease : IDisposable
     {
-        private bool m_disposed; // 保证本租约仅删除一次独占交付目录。
+        private readonly Dictionary<string, RawFileLease> m_files =
+            new Dictionary<string, RawFileLease>(); // 组内原始文件租约，原生卸载后才归还。
+        private bool m_disposed; // 保证本租约只释放一次。
         public AudioContentGroup Group { get; }
+        /// <summary>旧式目录交付的根目录；直读交付请使用 GetFilePath。</summary>
         public string DirectoryPath { get; }
         public string Version { get; }
         public string BackendVersion { get; }
@@ -101,12 +103,41 @@ namespace AlloyFramework.Audio
             BackendVersion = backendVersion;
         }
 
-        /// <summary>原生卸载完成后释放本组独占文件。</summary>
+        /// <summary>返回组内文件的实际物理路径，不假定所有文件位于同一目录。</summary>
+        /// <param name="relativePath">音频清单中的相对文件路径。</param>
+        /// <returns>保持有效的本地物理文件路径。</returns>
+        /// <exception cref="ObjectDisposedException">内容租约已释放。</exception>
+        /// <exception cref="KeyNotFoundException">直读交付未包含该文件。</exception>
+        public string GetFilePath(string relativePath)
+        {
+            if (m_disposed) { throw new ObjectDisposedException(nameof(AudioContentLease)); }
+            relativePath = relativePath.Replace('\\', '/');
+            if (m_files.TryGetValue(relativePath, out RawFileLease file)) { return file.FilePath; }
+            if (!string.IsNullOrEmpty(DirectoryPath)) { return System.IO.Path.Combine(DirectoryPath, relativePath); }
+            throw new KeyNotFoundException("音频内容未包含文件：" + relativePath);
+        }
+
+        internal void RetainFile(string relativePath, RawFileLease file)
+        {
+            m_files.Add(relativePath, file);
+        }
+
+        /// <summary>原生卸载完成后归还本组原始文件租约，不删除借用的资源文件。</summary>
         public void Dispose()
         {
             if (m_disposed) { return; }
             m_disposed = true;
-            if (Directory.Exists(DirectoryPath)) { Directory.Delete(DirectoryPath, true); }
+            Exception firstFailure = null;
+            // 单个归还失败也继续归还其余文件，避免永久占住资源包缓存清理。
+            foreach (RawFileLease file in m_files.Values)
+            {
+                try { file.Dispose(); }
+                catch (Exception exception) { if (firstFailure == null) { firstFailure = exception; } }
+            }
+            m_files.Clear();
+            if (!string.IsNullOrEmpty(DirectoryPath) && Directory.Exists(DirectoryPath))
+            { Directory.Delete(DirectoryPath, true); }
+            if (firstFailure != null) { throw new IOException("部分音频文件租约归还失败。", firstFailure); }
         }
     }
 
@@ -134,7 +165,7 @@ namespace AlloyFramework.Audio
         /// <param name="groupKey">资源组名称。</param>
         /// <param name="settings">当前平台和语言。</param>
         /// <param name="cancellationToken">取消令牌。</param>
-        /// <returns>版本隔离的本地资源租约。</returns>
+        /// <returns>保持原始文件有效的本地资源租约。</returns>
         /// <exception cref="InvalidOperationException">平台或文件版本不匹配。</exception>
         /// <exception cref="KeyNotFoundException">组不存在。</exception>
         public async UniTask<AudioContentLease> PrepareGroupAsync(string groupKey, AudioSettings settings,
@@ -143,12 +174,10 @@ namespace AlloyFramework.Audio
             if (Manifest.Platform != settings.Platform) { throw new InvalidOperationException("音频清单平台不匹配。"); }
             if (Manifest.Language != settings.Language) { throw new InvalidOperationException("音频清单语言不匹配。"); }
             AudioContentGroup group = groupKey == "Init" ? Manifest.Init : FindGroup(groupKey);
-            string directory = System.IO.Path.Combine(Application.persistentDataPath,
-                "AlloyAudio", Manifest.Version, Guid.NewGuid().ToString("N"));
-            Directory.CreateDirectory(directory);
+            var content = new AudioContentLease(group, string.Empty, Manifest.Version, Manifest.BackendVersion);
             try
             {
-                // 独占目录保护正在播放的旧版本，交付失败时完整清理，禁止原地覆盖。
+                // 内容租约接管资源句柄；成功、取消和失败均不创建完整音频副本。
                 foreach (AudioContentFile file in group.Files)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
@@ -156,30 +185,91 @@ namespace AlloyFramework.Audio
                     string location = string.IsNullOrEmpty(file.Location)
                         ? (string.IsNullOrEmpty(m_sourceRoot) ? relativePath
                             : m_sourceRoot.TrimEnd('/', '\\') + "/" + relativePath) : file.Location;
-                    using (RawFileLease raw = await ResourceManager.Instance.LoadRawFileAsync(
-                        location, m_packageName, cancellationToken))
+                    RawFileLease raw = null;
+                    try
                     {
-                        using (System.Security.Cryptography.SHA256 hash = System.Security.Cryptography.SHA256.Create())
-                        using (FileStream source = File.OpenRead(raw.FilePath))
+                        raw = await ResourceManager.Instance.LoadRawFileAsync(
+                            location, m_packageName, cancellationToken);
+                        if (settings.VerifyContentHashes || !raw.IsPackageFile)
                         {
-                            string actualHash = BitConverter.ToString(hash.ComputeHash(source)).Replace("-", "");
-                            if (!string.Equals(actualHash, file.Hash, StringComparison.OrdinalIgnoreCase))
-                            {
-                                throw new InvalidOperationException($"音频文件版本不匹配，请重新导出清单：{file.Path}");
-                            }
+                            await CopyVerifiedFileAsync(
+                                raw.FilePath, null, file.Hash, file.Path, cancellationToken);
                         }
-                        string target = System.IO.Path.Combine(directory, relativePath);
-                        Directory.CreateDirectory(System.IO.Path.GetDirectoryName(target));
-                        File.Copy(raw.FilePath, target, false);
+
+                        cancellationToken.ThrowIfCancellationRequested();
+                        content.RetainFile(relativePath, raw);
+                        raw = null;
                     }
+                    finally { raw?.Dispose(); }
                 }
                 cancellationToken.ThrowIfCancellationRequested();
-                return new AudioContentLease(group, directory, Manifest.Version, Manifest.BackendVersion);
+                return content;
             }
             catch
             {
-                Directory.Delete(directory, true);
+                content.Dispose();
                 throw;
+            }
+        }
+
+        private static async UniTask<long> CopyVerifiedFileAsync(
+            string sourcePath,
+            string targetPath,
+            string expectedHash,
+            string relativePath,
+            CancellationToken cancellationToken)
+        {
+            // 纯文件工作离开 Unity 主线程；不创建携带状态的闭包，也不提前释放源文件租约。
+#if !UNITY_WEBGL || UNITY_EDITOR
+            await UniTask.SwitchToThreadPool();
+#endif
+            try
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (targetPath != null) { Directory.CreateDirectory(System.IO.Path.GetDirectoryName(targetPath)); }
+                long byteCount = 0;
+                const int BUFFERSIZE = 262144;
+                byte[] buffer = new byte[BUFFERSIZE];
+                using (var hash = new AudioContentHash())
+                using (var source = new FileStream(sourcePath, FileMode.Open, FileAccess.Read,
+                    FileShare.Read, BUFFERSIZE, FileOptions.SequentialScan))
+                using (FileStream destination = targetPath == null ? null : new FileStream(
+                    targetPath, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+                    BUFFERSIZE, FileOptions.SequentialScan))
+                {
+                    // 音频直读路径只计算摘要，不建立交付副本。
+                    while (true)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        int bytesRead = source.Read(buffer, 0, buffer.Length);
+                        if (bytesRead == 0) { break; }
+                        hash.Append(buffer, bytesRead);
+                        destination?.Write(buffer, 0, bytesRead);
+                        byteCount += bytesRead;
+#if UNITY_WEBGL && !UNITY_EDITOR
+                        // 无线程平台分帧处理，仍使用固定大小缓冲区。
+                        await UniTask.Yield(PlayerLoopTiming.Update, cancellationToken);
+#endif
+                    }
+                    // 完整处理最后一块摘要后比对导出清单。
+                    destination?.Flush();
+                    byte[] digest = hash.Complete();
+                    cancellationToken.ThrowIfCancellationRequested();
+                    string actualHash = BitConverter.ToString(digest).Replace("-", string.Empty);
+                    if (!string.Equals(actualHash, expectedHash, StringComparison.OrdinalIgnoreCase))
+                    {
+                        throw new InvalidOperationException("音频文件版本不匹配，请重新导出清单：" + relativePath);
+                    }
+                }
+                cancellationToken.ThrowIfCancellationRequested();
+                return byteCount;
+            }
+            finally
+            {
+#if !UNITY_WEBGL || UNITY_EDITOR
+                // 即使校验失败或取消，也先回主线程，再执行资源释放与原有异常处理。
+                await UniTask.SwitchToMainThread();
+#endif
             }
         }
 

@@ -1,4 +1,3 @@
-using System.Collections.Generic;
 using UnityEngine;
 
 namespace AlloyFramework.Audio.Wwise
@@ -10,9 +9,6 @@ namespace AlloyFramework.Audio.Wwise
         private const string BGMVOLUMEPARAMETER = "AlloyBGMVolume"; // 背景音乐总线参数。
         private const string SFXVOLUMEPARAMETER = "AlloySFXVolume"; // 音效总线参数。
         private const string INSTANCEVOLUMEPARAMETER = "AlloyInstanceVolume"; // 单次播放声部音量参数。
-#if UNITY_EDITOR
-        private readonly List<VolumeProbe> m_volumeProbes = new List<VolumeProbe>(); // 延迟读取原生音量参数。
-#endif
 
         /// <summary>将归一化分类音量转换为 Wwise 总线的分贝参数。</summary>
         /// <param name="channel">音量分类。</param>
@@ -32,9 +28,6 @@ namespace AlloyFramework.Audio.Wwise
             }
             float decibels = ToDecibels(volume);
             AKRESULT result = AkUnitySoundEngine.SetRTPCValue(parameter, decibels);
-#if UNITY_EDITOR
-            RecordVolumeProbe(parameter, volume, decibels, 0, result);
-#endif
             return VolumeResult(result, parameter);
         }
 
@@ -51,58 +44,9 @@ namespace AlloyFramework.Audio.Wwise
             float decibels = ToDecibels(volume);
             AKRESULT result = AkUnitySoundEngine.SetRTPCValueByPlayingID(
                 INSTANCEVOLUMEPARAMETER, decibels, playback.PlayingID);
-#if UNITY_EDITOR
-            RecordVolumeProbe(INSTANCEVOLUMEPARAMETER, volume, decibels, playback.PlayingID, result);
-#endif
             return VolumeResult(result, INSTANCEVOLUMEPARAMETER);
         }
 
-#if UNITY_EDITOR
-        private void RecordVolumeProbe(
-            string parameter, float volume, float decibels, uint playingID, AKRESULT result)
-        {
-            // 保留提交值和原生结果，区分业务传参、换算与参数生效问题。
-            Debug.Log($"[音量检查][提交] 参数={parameter}，输入={volume:R}，目标dB={decibels:R}，"
-                + $"PlayingID={playingID}，结果={result}");
-            if (result != AKRESULT.AK_Success) { return; }
-            m_volumeProbes.Add(new VolumeProbe(parameter, decibels, playingID, Time.frameCount + 2));
-        }
-
-        private void PollVolumeProbes()
-        {
-            // RTPC 查询不等待音频线程；延后两帧读取，避免把提交后的旧值误认为设置失败。
-            for (int index = m_volumeProbes.Count - 1; index >= 0; index--)
-            {
-                VolumeProbe probe = m_volumeProbes[index];
-                if (Time.frameCount < probe.ReadFrame) { continue; }
-                int valueType = probe.PlayingID == 0
-                    ? (int)AkQueryRTPCValue.RTPCValue_Global : (int)AkQueryRTPCValue.RTPCValue_PlayingID;
-                AKRESULT result = AkUnitySoundEngine.GetRTPCValue(
-                    probe.Parameter, AkUnitySoundEngine.AK_INVALID_GAME_OBJECT, probe.PlayingID,
-                    out float actualValue, ref valueType);
-                Debug.Log($"[音量检查][读取] 参数={probe.Parameter}，目标dB={probe.Decibels:R}，"
-                    + $"实际RTPC={actualValue:R}，来源={(AkQueryRTPCValue)valueType}，"
-                    + $"PlayingID={probe.PlayingID}，结果={result}（短音效结束或音频线程延迟会影响读取）");
-                m_volumeProbes.RemoveAt(index);
-            }
-        }
-
-        private readonly struct VolumeProbe
-        {
-            internal readonly string Parameter;
-            internal readonly float Decibels;
-            internal readonly uint PlayingID;
-            internal readonly int ReadFrame;
-
-            internal VolumeProbe(string parameter, float decibels, uint playingID, int readFrame)
-            {
-                Parameter = parameter;
-                Decibels = decibels;
-                PlayingID = playingID;
-                ReadFrame = readFrame;
-            }
-        }
-#endif
 
         private static bool IsValidVolume(float volume)
         { return !float.IsNaN(volume) && !float.IsInfinity(volume) && volume >= 0 && volume <= 1; }

@@ -17,6 +17,17 @@ namespace AlloyFramework.Audio
         bool TryGetPosition(long playID, out int timeMs);
     }
 
+    /// <summary>后端可选的首次播放起点能力，提交播放与定位之间不能等待 Unity 帧。</summary>
+    public interface IAudioTimelineStartBackend
+    {
+        /// <summary>提交独立实例并在同一次调用中设置首次播放位置。</summary>
+        /// <param name="playID">框架播放标识。</param>
+        /// <param name="key">音频事件。</param>
+        /// <param name="emitter">可选发声对象。</param>
+        /// <param name="timeMs">非负起点毫秒数。</param>
+        /// <returns>播放和起点定位的提交结果。</returns>
+        AudioOperationResult PlayFrom(long playID, string key, AudioEmitter emitter, int timeMs);
+    }
     public sealed partial class AudioManager
     {
         /// <summary>当前后端是否提供独立实例的定位和位置查询。</summary>

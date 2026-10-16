@@ -28,6 +28,8 @@ namespace AlloyFramework.Audio
     {
         public string Platform { get; set; }
         public string Language { get; set; } = "English(US)";
+        /// <summary>是否额外校验资源包音频的 SHA256；默认关闭，本地文件仍校验。</summary>
+        public bool VerifyContentHashes { get; set; }
         public EAudioReadinessMode DefaultReadiness { get; set; } = EAudioReadinessMode.LoadIfNeeded;
         public int PlaybackHistoryLimit { get; set; } = 256;
         /// <summary>引用归零后的缓存保留秒数；零表示立即卸载，不受游戏时间缩放影响。</summary>
@@ -42,6 +44,8 @@ namespace AlloyFramework.Audio
         public AudioEmitter Emitter { get; set; }
         public Vector3? Position { get; set; }
         public EAudioReadinessMode? ReadinessMode { get; set; }
+        /// <summary>首次播放起点，单位毫秒，默认零；非零需要后端支持起点提交。</summary>
+        public int StartTimeMs { get; set; }
         /// <summary>单次播放音量，范围为 0～1；未指定时使用 1。</summary>
         public float? Volume { get; set; }
     }

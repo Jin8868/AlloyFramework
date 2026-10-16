@@ -195,7 +195,7 @@ namespace AlloyFramework.Audio
         /// <exception cref="ArgumentException">Key 或空间配置无效。</exception>
         /// <exception cref="ObjectDisposedException">作用域已释放。</exception>
         /// <exception cref="InvalidOperationException">音频未就绪或作用域已过期。</exception>
-        /// <exception cref="NotSupportedException">后端不支持请求的空间能力。</exception>
+        /// <exception cref="NotSupportedException">后端不支持请求的空间能力或首次起点。</exception>
         public long PlayAudio(string key, AudioPlayOptions? options = null,
             Action<AudioStartResult> onStarted = null, CancellationToken cancellationToken = default)
         {
@@ -208,6 +208,8 @@ namespace AlloyFramework.Audio
         /// <param name="cancellationToken">请求取消令牌。</param>
         /// <returns>成功提交的框架播放标识。</returns>
         /// <exception cref="InvalidOperationException">未就绪或提交失败。</exception>
+        /// <exception cref="ArgumentOutOfRangeException">首次起点小于零。</exception>
+        /// <exception cref="NotSupportedException">后端不支持首次起点。</exception>
         public async UniTask<long> PlayAudioAsync(string key, AudioPlayOptions? options = null,
             CancellationToken cancellationToken = default)
         {
@@ -236,6 +238,10 @@ namespace AlloyFramework.Audio
             { throw new ArgumentException("Position 与 Emitter 不能同时指定。"); }
             if (effective.Emitter != null && !effective.Emitter.IsValid)
             { throw new ArgumentException("发声对象已释放。"); }
+            if (effective.StartTimeMs < 0)
+                throw new ArgumentOutOfRangeException(nameof(options), "音频起点不能为负数。");
+            if (effective.StartTimeMs > 0 && !(m_backend is IAudioTimelineStartBackend))
+                throw new NotSupportedException("当前音频后端不支持首次播放起点。");
             ValidateVolume(effective.Volume ?? 1);
             if (effective.Volume.HasValue && !(m_backend is IAudioVolumeBackend))
             { throw new NotSupportedException("后端不支持单次播放音量。"); }
@@ -649,7 +655,11 @@ namespace AlloyFramework.Audio
                 { throw new OperationCanceledException(); }
                 AudioEmitter emitter = playback.Options.Emitter;
                 if (playback.Options.Position.HasValue) { emitter = new AudioEmitter(playback.Options.Position.Value); }
-                AudioOperationResult result = m_backend.Play(playback.ID, playback.Key, emitter);
+                // 起点必须在后端提交时处理，不能等开始通知完成后再跨帧定位。
+                AudioOperationResult result = playback.Options.StartTimeMs > 0
+                    ? ((IAudioTimelineStartBackend)m_backend).PlayFrom(
+                        playback.ID, playback.Key, emitter, playback.Options.StartTimeMs)
+                    : m_backend.Play(playback.ID, playback.Key, emitter);
                 if (!result.IsSuccess) { Finish(playback, result); return; }
                 playback.State = EAudioPlaybackState.Playing;
                 playback.Started = true;

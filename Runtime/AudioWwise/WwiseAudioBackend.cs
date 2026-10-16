@@ -20,7 +20,11 @@ namespace AlloyFramework.Audio.Wwise
         private readonly ConcurrentQueue<NativePlayback> m_endedQueue =
             new ConcurrentQueue<NativePlayback>(); // 回调仅交付最小上下文。
         private readonly AkCallbackManager.EventCallback m_callback = OnEventCallback; // 缓存静态回调。
-        private readonly Dictionary<string, int> m_fileUsers = new Dictionary<string, int>(); // 原生目录文件引用。
+        private readonly Dictionary<string, WwiseReadFile> m_fileUsers =
+            new Dictionary<string, WwiseReadFile>(); // 原文件读取入口与共享引用，不持有完整数据副本。
+        private readonly HashSet<string> m_searchRoots = new HashSet<string>(); // 引擎生命周期内登记过的读取目录。
+        private readonly Dictionary<string, string> m_fileReadPaths =
+            new Dictionary<string, string>(); // 同一会话内固定文件名到读取位置，避免残留搜索目录命中旧版本。
         private readonly List<AudioEmitter> m_emitterSnapshot = new List<AudioEmitter>(); // 跟随与注销复用缓冲。
         private GameObject m_root; // 框架唯一持久化对象。
         private GameObject m_listener; // 默认监听器，不依赖业务相机。
@@ -28,7 +32,7 @@ namespace AlloyFramework.Audio.Wwise
         private Transform m_listenerTarget; // 显式选择的空间监听目标。
         private Action<long, long> m_ended; // 框架结束通知。
         private long m_session; // 迟到回调隔离。
-        private string m_initDirectory; // 原生读取的会话独占目录，避免累积搜索路径。
+        private string m_initDirectory; // 会话读取根目录，只持有必要的文件名硬链接。
         private bool m_ownsEngine; // 仅销毁自己初始化的引擎。
         private bool m_focused = true; // 系统焦点状态。
         private bool m_systemPaused; // 系统挂起状态。
@@ -96,6 +100,7 @@ namespace AlloyFramework.Audio.Wwise
                 try { AkUnitySoundEngine.InitCommunication(communication); }
                 finally { pin.Free(); }
                 Check(AkUnitySoundEngine.SetBasePath(m_initDirectory), "设置初始化目录");
+                m_searchRoots.Add(m_initDirectory);
                 // 当前自动 Bank 输出使用 Event、Bus、Media 目录，兼容项目关闭原生子目录开关的设置。
                 AddSearchDirectory("Event");
                 AddSearchDirectory("Bus");
@@ -139,11 +144,11 @@ namespace AlloyFramework.Audio.Wwise
                 m_ownsEngine = false;
             }
             m_playbacks.Clear();
-#if UNITY_EDITOR
-            m_volumeProbes.Clear();
-#endif
             m_groups.Clear();
+            foreach (WwiseReadFile file in m_fileUsers.Values) { file.Dispose(); }
             m_fileUsers.Clear();
+            m_searchRoots.Clear();
+            m_fileReadPaths.Clear();
             m_emitters.Clear();
             m_emitterSnapshot.Clear();
             while (m_endedQueue.TryDequeue(out _)) { }
@@ -175,7 +180,7 @@ namespace AlloyFramework.Audio.Wwise
             return UniTask.CompletedTask;
         }
 
-        /// <summary>同步卸载确认后重建搜索目录。</summary>
+        /// <summary>同步卸载确认后归还文件读取引用。</summary>
         /// <param name="content">待卸载组。</param>
         public void UnloadGroup(AudioContentLease content)
         {
@@ -290,9 +295,6 @@ namespace AlloyFramework.Audio.Wwise
             // SDK 在这里把原生通知转入托管回调；退出泵后才执行资源回收。
             AkCallbackManager.PostCallbacks();
             AkUnitySoundEngine.RenderAudio();
-#if UNITY_EDITOR
-            PollVolumeProbes();
-#endif
             while (m_endedQueue.TryDequeue(out NativePlayback playback))
             {
                 if (!m_playbacks.Remove(playback.ID)) { continue; }
@@ -322,16 +324,32 @@ namespace AlloyFramework.Audio.Wwise
             m_groups.Add(content, group);
             try
             {
-                // 原生引擎只使用一个稳定根目录；共享媒体按文件引用保留到最后一个组卸载。
+                // 按实际目录读取；哈希文件名只建立硬链接，共享文件保留到最后一个组卸载。
                 foreach (AudioContentFile file in content.Group.Files)
                 {
-                    string target = Path.Combine(m_initDirectory, file.Path);
-                    if (!m_fileUsers.TryGetValue(file.Path, out int users))
+                    string sourcePath = Path.GetFullPath(content.GetFilePath(file.Path));
+                    if (!m_fileUsers.TryGetValue(file.Path, out WwiseReadFile readFile))
                     {
-                        Directory.CreateDirectory(Path.GetDirectoryName(target));
-                        File.Copy(Path.Combine(content.DirectoryPath, file.Path), target, false);
+                        readFile = WwiseReadFile.Create(sourcePath, file.Path, file.Hash, m_initDirectory);
+                        string readPath = Path.GetFullPath(Path.Combine(readFile.SearchRoot, file.Path));
+                        if (m_fileReadPaths.TryGetValue(file.Path, out string previousPath) &&
+                            !string.Equals(previousPath, readPath, StringComparison.Ordinal))
+                        {
+                            readFile.Dispose();
+                            throw new InvalidOperationException(
+                                "Wwise 会话已登记同名文件的其他读取目录，请关闭音频会话后切换目录：" + file.Path);
+                        }
+                        try { RegisterReadRoot(readFile.SearchRoot); }
+                        catch { readFile.Dispose(); throw; }
+                        m_fileReadPaths[file.Path] = readPath;
+                        m_fileUsers.Add(file.Path, readFile);
                     }
-                    m_fileUsers[file.Path] = users + 1;
+                    else if (!string.Equals(readFile.SourcePath, sourcePath, StringComparison.Ordinal) ||
+                        !string.Equals(readFile.Hash, file.Hash, StringComparison.OrdinalIgnoreCase))
+                    {
+                        throw new InvalidOperationException("同名 Wwise 文件仍被其他组使用，不能切换来源或版本：" + file.Path);
+                    }
+                    readFile.Users++;
                     group.Files.Add(file.Path);
                 }
                 foreach (AudioBankDefinition bank in content.Group.Banks)
@@ -380,12 +398,29 @@ namespace AlloyFramework.Audio.Wwise
         {
             foreach (string path in group.Files)
             {
-                int users = m_fileUsers[path] - 1;
-                if (users > 0) { m_fileUsers[path] = users; continue; }
+                WwiseReadFile file = m_fileUsers[path];
+                file.Users--;
+                if (file.Users > 0) { continue; }
                 m_fileUsers.Remove(path);
-                File.Delete(Path.Combine(m_initDirectory, path));
+                file.Dispose();
             }
             group.Files.Clear();
+        }
+
+        private void RegisterReadRoot(string root)
+        {
+            // 目录只登记一次；文件原名或硬链接名称均遵循 SDK 的 Event、Bus、Media 寻址。
+            RegisterReadDirectory(root);
+            RegisterReadDirectory(Path.Combine(root, "Event"));
+            RegisterReadDirectory(Path.Combine(root, "Bus"));
+            RegisterReadDirectory(Path.Combine(root, "Media"));
+        }
+
+        private void RegisterReadDirectory(string directory)
+        {
+            if (m_searchRoots.Contains(directory) || !Directory.Exists(directory)) { return; }
+            Check(AkUnitySoundEngine.AddBasePath(directory), "登记音频原文件读取目录");
+            m_searchRoots.Add(directory);
         }
 
         private GameObject CreateObject(string name)

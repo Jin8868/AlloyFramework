@@ -13,7 +13,7 @@ namespace AlloyFramework
         /// <param name="location">资源地址。</param>
         /// <param name="packageName">资源包名称。</param>
         /// <param name="cancellationToken">取消令牌。</param>
-        /// <returns>具有独立本地快照的原始文件租约。</returns>
+        /// <returns>保持来源有效的原始文件读取租约；仅无物理文件时落地。</returns>
         UniTask<RawFileLease> LoadRawFileAsync(string location, string packageName,
             CancellationToken cancellationToken);
     }
@@ -22,8 +22,13 @@ namespace AlloyFramework
     {
         private readonly string m_directory; // 仅由本租约持有的快照目录。
         private bool m_disposed; // 幂等释放标志。
+        private readonly IDisposable m_sourceOwner; // 直读时持有的资源包句柄，不删除源文件。
+        private readonly IDisposable m_readReservation; // 防止框架缓存清理与原生读取交错。
+        private readonly FileStream m_readGuard; // 保持只读句柄；文件删除由缓存预留协调。
         public string FilePath { get; }
         public bool IsValid => !m_disposed;
+        /// <summary>是否直接借用资源包提供的物理文件。</summary>
+        public bool IsPackageFile => m_sourceOwner != null;
 
         internal RawFileLease(string directory, string filePath)
         {
@@ -31,12 +36,34 @@ namespace AlloyFramework
             FilePath = filePath;
         }
 
-        /// <summary>释放本租约独占的文件快照。</summary>
+        private RawFileLease(string filePath, IDisposable sourceOwner, IDisposable readReservation)
+        {
+            FilePath = Path.GetFullPath(filePath);
+            m_sourceOwner = sourceOwner;
+            m_readReservation = readReservation;
+            m_readGuard = new FileStream(FilePath, FileMode.Open, FileAccess.Read,
+                FileShare.Read | FileShare.Delete);
+        }
+
+        internal static RawFileLease Borrow(string filePath, IDisposable sourceOwner = null,
+            IDisposable readReservation = null)
+        {
+            return new RawFileLease(filePath, sourceOwner, readReservation);
+        }
+
+        /// <summary>归还读取句柄；仅删除本租约自己落地的临时文件，不删除借用文件。</summary>
         public void Dispose()
         {
             if (m_disposed) { return; }
             m_disposed = true;
-            if (Directory.Exists(m_directory)) { Directory.Delete(m_directory, true); }
+            try { m_readGuard?.Dispose(); }
+            finally
+            {
+                try { m_sourceOwner?.Dispose(); }
+                finally { m_readReservation?.Dispose(); }
+            }
+            if (!string.IsNullOrEmpty(m_directory) && Directory.Exists(m_directory))
+            { Directory.Delete(m_directory, true); }
         }
 
         internal static RawFileLease Create(byte[] bytes)
@@ -98,7 +125,7 @@ namespace AlloyFramework
 
     public sealed partial class ResourceManager
     {
-        /// <summary>通过框架加载原始文件；本地绝对地址和 APK 内地址均交付为独立本地快照。</summary>
+        /// <summary>通过框架借用原始文件；已有物理文件直接读取，APK 内等非物理地址按需落地。</summary>
         /// <param name="location">资源包地址、本地绝对路径或 jar/file 地址。</param>
         /// <param name="packageName">非本地地址所属资源包。</param>
         /// <param name="cancellationToken">取消令牌。</param>
@@ -111,7 +138,13 @@ namespace AlloyFramework
             if (string.IsNullOrWhiteSpace(location)) { throw new ArgumentException("原始文件地址不能为空。", nameof(location)); }
             cancellationToken.ThrowIfCancellationRequested();
 
-            // 本地制作资源和安装包内文件也通过统一资源入口交付，不由音频模块自行持有源文件。
+            // 本地文件直接借用，只有压缩包内部等无物理路径来源才需要落地。
+            if (location.StartsWith("file:", StringComparison.OrdinalIgnoreCase) &&
+                Uri.TryCreate(location, UriKind.Absolute, out Uri localAddress) && localAddress.IsFile &&
+                File.Exists(localAddress.LocalPath))
+            {
+                return RawFileLease.Borrow(localAddress.LocalPath);
+            }
             if (location.StartsWith("jar:", StringComparison.Ordinal) ||
                 location.StartsWith("file:", StringComparison.Ordinal))
             {
@@ -131,7 +164,7 @@ namespace AlloyFramework
 
             if (Path.IsPathRooted(location))
             {
-                return await RawFileLease.CopyAsync(location, cancellationToken);
+                return RawFileLease.Borrow(location);
             }
 
             if (!(GetService() is IRawFileService rawFileService))
@@ -144,31 +177,47 @@ namespace AlloyFramework
 
     internal sealed partial class YooAssetService : IRawFileService
     {
-        /// <summary>通过资源包加载原始文件并创建稳定的本地快照。</summary>
+        /// <summary>通过资源包借用原始文件，读取结束前保持加载句柄和缓存预留。</summary>
         /// <param name="location">资源地址。</param>
         /// <param name="packageName">资源包名称。</param>
         /// <param name="cancellationToken">取消令牌。</param>
-        /// <returns>不依赖资源缓存文件名的原始文件租约。</returns>
+        /// <returns>保持资源缓存文件有效的读取租约。</returns>
         public async UniTask<RawFileLease> LoadRawFileAsync(string location, string packageName,
             CancellationToken cancellationToken)
         {
             ValidateLocation(location);
             cancellationToken.ThrowIfCancellationRequested();
-            YooAsset.RawFileHandle handle = GetPackage(packageName).LoadRawFileAsync(location);
+            YooAsset.RawFileHandle handle = null;
+            IDisposable reservation = await RawFileReadGate.ReserveReadAsync(packageName, cancellationToken);
             try
             {
-                // 在释放 YooAsset 句柄前复制数据，缓存清理不会使后续原生读取失效。
+                // 加载完成后将句柄所有权交给读取租约。
+                handle = GetPackage(packageName).LoadRawFileAsync(location);
                 while (!handle.IsDone) { await UniTask.Yield(PlayerLoopTiming.Update, cancellationToken); }
                 cancellationToken.ThrowIfCancellationRequested();
                 if (handle.Status != YooAsset.EOperationStatus.Succeed) { throw new IOException(handle.LastError); }
+
+                // 物理文件直接借用，资源句柄和缓存预留随租约一起转交。
                 string physicalPath = handle.GetRawFilePath();
                 if (File.Exists(physicalPath))
-                    return await RawFileLease.CopyAsync(physicalPath, cancellationToken);
+                {
+                    RawFileLease lease = RawFileLease.Borrow(physicalPath, handle, reservation);
+                    handle = null;
+                    reservation = null;
+                    return lease;
+                }
+
+                // 无物理路径时才落地，生成文件由租约独占并在归还后删除。
                 byte[] bytes = handle.GetRawFileData();
                 if (bytes == null) { throw new IOException($"原始文件数据为空：{location}"); }
-                return RawFileLease.Create(bytes);
+                RawFileLease snapshot = RawFileLease.Create(bytes);
+                return snapshot;
             }
-            finally { handle.Release(); }
+            finally
+            {
+                try { handle?.Release(); }
+                finally { reservation?.Dispose(); }
+            }
         }
     }
 }

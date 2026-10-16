@@ -1,7 +1,24 @@
 namespace AlloyFramework.Audio.Wwise
 {
-    public sealed partial class WwiseAudioBackend : IAudioTimelineBackend
+    public sealed partial class WwiseAudioBackend : IAudioTimelineBackend, IAudioTimelineStartBackend
     {
+        /// <summary>在同一次主线程提交中先 PostEvent 再定位，不等待开始通知或 Unity 帧。</summary>
+        /// <param name="playID">框架播放标识。</param>
+        /// <param name="key">音频事件。</param>
+        /// <param name="emitter">可选发声对象。</param>
+        /// <param name="timeMs">非负起点毫秒数。</param>
+        /// <returns>事件与定位的提交结果，定位失败会请求停止刚创建的实例。</returns>
+        public AudioOperationResult PlayFrom(long playID, string key, AudioEmitter emitter, int timeMs)
+        {
+            if (timeMs < 0) { return Error("音轨起点不能为负数。"); }
+            AudioOperationResult result = Play(playID, key, emitter);
+            if (!result.IsSuccess || timeMs == 0) { return result; }
+            // SDK 命令按顺序进入同次提交，避免业务等待一帧后才将已发声的音轨拉到起点。
+            if (Seek(playID, timeMs)) { return result; }
+            Stop(playID, 0);
+            return Error("Wwise 未接受首次音轨定位，请检查事件是否为可定位的独立音轨。");
+        }
+
         /// <summary>按 Playing ID 定位，不影响相同事件的其他实例。</summary>
         /// <param name="playID">框架播放标识。</param>
         /// <param name="timeMs">目标毫秒数。</param>

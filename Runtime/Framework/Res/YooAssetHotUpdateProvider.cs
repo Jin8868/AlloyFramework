@@ -88,14 +88,21 @@ namespace AlloyFramework
             }
         }
 
+        /// <summary>等待该包直读租约归还后清理旧版本缓存，清理期间阻止新的直读。</summary>
+        /// <param name="cancellationToken">等待清理预留时的取消令牌。</param>
+        /// <returns>缓存清理任务；已启动的清理完成后才归还互斥预留。</returns>
         public async UniTask ClearUnusedCacheAsync(CancellationToken cancellationToken = default)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var operation = _package.ClearCacheFilesAsync(EFileClearMode.ClearUnusedBundleFiles);
-            await UniTask.WaitUntil(() => operation.IsDone, cancellationToken: cancellationToken);
-            RequireSuccess(operation.Status, operation.Error, "clear unused cache");
+            using (await RawFileReadGate.ReserveCleanupAsync(PackageName, cancellationToken))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var operation = _package.ClearCacheFilesAsync(EFileClearMode.ClearUnusedBundleFiles);
+                // YooAssets 清理操作不能撤销，取消也不能提前放行新的文件读取。
+                while (!operation.IsDone) { await UniTask.Yield(PlayerLoopTiming.Update); }
+                RequireSuccess(operation.Status, operation.Error, "clear unused cache");
+                cancellationToken.ThrowIfCancellationRequested();
+            }
         }
-
         private void RequireSuccess(EOperationStatus status, string error, string action)
         {
             if (status != EOperationStatus.Succeed)
