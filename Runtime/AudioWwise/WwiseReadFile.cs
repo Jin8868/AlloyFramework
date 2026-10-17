@@ -9,6 +9,7 @@ namespace AlloyFramework.Audio.Wwise
     internal sealed class WwiseReadFile : IDisposable
     {
         private readonly string m_linkPath; // 仅删除框架创建的硬链接名称，不删除资源文件。
+        private string m_ownedLinkRoot; // 跨卷来源旁创建的独占链接目录，释放时一并清理。
         private bool m_disposed; // 避免重复删除链接。
 
         internal string SourcePath { get; }
@@ -42,22 +43,51 @@ namespace AlloyFramework.Audio.Wwise
             }
 
             // 哈希缓存文件名不能直接被 Wwise 按媒体 ID 找到；硬链接只增加名字，不复制数据。
-            string linkPath = Path.Combine(readRoot, relativePath);
-            Directory.CreateDirectory(Path.GetDirectoryName(linkPath));
+            string ownedLinkRoot = null;
 #if UNITY_EDITOR_WIN || (UNITY_STANDALONE_WIN && !UNITY_EDITOR)
-            bool linked = CreateHardLink(linkPath, sourcePath, IntPtr.Zero);
-#elif UNITY_IOS || UNITY_ANDROID || UNITY_EDITOR_OSX || UNITY_STANDALONE_OSX || UNITY_STANDALONE_LINUX
-            bool linked = Link(sourcePath, linkPath) == 0;
-#else
-            bool linked = false;
-#endif
-            if (!linked)
+            if (!string.Equals(Path.GetPathRoot(sourcePath), Path.GetPathRoot(Path.GetFullPath(readRoot)),
+                StringComparison.OrdinalIgnoreCase))
             {
-                throw new IOException(
-                    "无法建立 Wwise 文件名硬链接；直读模式不会回退为完整复制。请使用同卷可写缓存或自定义 Wwise I/O：" +
-                    sourcePath, new Win32Exception(Marshal.GetLastWin32Error()));
+                // 内置资源可能在 D 盘而 persistentDataPath 在 C 盘；硬链接必须落在来源所在卷。
+                // 会话和来源共同固定目录，卸载后重开仍能复用原生引擎登记过的搜索路径。
+                ownedLinkRoot = Path.Combine(Path.GetDirectoryName(sourcePath),
+                    ".AlloyWwise-" + Path.GetFileName(readRoot.TrimEnd('/', '\\')) +
+                    "-" + Path.GetFileNameWithoutExtension(sourcePath));
+                readRoot = ownedLinkRoot;
             }
-            return new WwiseReadFile(sourcePath, hash, readRoot, linkPath);
+#endif
+            string linkPath = Path.Combine(readRoot, relativePath);
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(linkPath));
+#if UNITY_EDITOR_WIN || (UNITY_STANDALONE_WIN && !UNITY_EDITOR)
+                bool linked = CreateHardLink(linkPath, sourcePath, IntPtr.Zero);
+#elif UNITY_IOS || UNITY_ANDROID || UNITY_EDITOR_OSX || UNITY_STANDALONE_OSX || UNITY_STANDALONE_LINUX
+                bool linked = Link(sourcePath, linkPath) == 0;
+#else
+                bool linked = false;
+#endif
+                if (!linked)
+                {
+                    int errorCode = Marshal.GetLastWin32Error();
+                    throw new IOException(
+                        "无法建立 Wwise 文件名硬链接，请确保音频来源目录同卷可写，或使用自定义 Wwise I/O：" +
+                        sourcePath + " -> " + linkPath, new Win32Exception(errorCode));
+                }
+                return new WwiseReadFile(sourcePath, hash, readRoot, linkPath)
+                {
+                    m_ownedLinkRoot = ownedLinkRoot
+                };
+            }
+            catch
+            {
+                // 独占目录只保存本次创建的文件名链接，不含资源文件本体。
+                if (ownedLinkRoot != null && Directory.Exists(ownedLinkRoot))
+                {
+                    Directory.Delete(ownedLinkRoot, true);
+                }
+                throw;
+            }
         }
 
         /// <summary>原生卸载后移除文件名硬链接，原始资源仍由内容租约管理。</summary>
@@ -65,7 +95,12 @@ namespace AlloyFramework.Audio.Wwise
         {
             if (m_disposed) { return; }
             m_disposed = true;
+            // 先删除本文件的别名；跨卷适配目录由本实例独占，不影响其他租约或来源文件。
             if (!string.IsNullOrEmpty(m_linkPath)) { File.Delete(m_linkPath); }
+            if (m_ownedLinkRoot != null && Directory.Exists(m_ownedLinkRoot))
+            {
+                Directory.Delete(m_ownedLinkRoot, true);
+            }
         }
 
 #if UNITY_EDITOR_WIN || (UNITY_STANDALONE_WIN && !UNITY_EDITOR)
