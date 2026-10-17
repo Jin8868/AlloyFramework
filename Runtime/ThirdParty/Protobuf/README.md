@@ -1,6 +1,6 @@
 # Protobuf 运行库
 
-来源：同电脑 `D:/WorkSpeace/UnityProject/Character/Assets/Plugins/protobuf` 的既有插件，
+来源：关联工程 `../Character/Assets/Plugins/protobuf`（相对于本仓库根目录） 的既有插件，
 原文件和导入设置沿用，统一随框架放在 `Runtime/ThirdParty/Protobuf`，游戏 Plugins 不再保留副本。
 
 已读取 Google.Protobuf 程序集标识 `3.34.1.0`，目标框架 `.NETStandard,Version=v2.0`。

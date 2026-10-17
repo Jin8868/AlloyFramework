@@ -117,10 +117,6 @@ namespace AlloyFramework
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
         private static void Startup()
         {
-#if UNITY_EDITOR
-            // 编辑器独立测试可在进入 Play 前选择跳过自动启动，正式 Player 始终按原流程启动。
-            if (UnityEditor.SessionState.GetBool("AlloyFramework.SkipAutomaticStartup", false)) return;
-#endif
             if (_isStarting || _isInitialized)
             {
                 return;
