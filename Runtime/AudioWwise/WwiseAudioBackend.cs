@@ -32,7 +32,7 @@ namespace AlloyFramework.Audio.Wwise
         private Transform m_listenerTarget; // 显式选择的空间监听目标。
         private Action<long, long> m_ended; // 框架结束通知。
         private long m_session; // 迟到回调隔离。
-        private string m_initDirectory; // 会话读取根目录，只持有必要的文件名硬链接。
+        private string m_initDirectory; // 会话读取根目录，只持有必要的文件名链接。
         private bool m_ownsEngine; // 仅销毁自己初始化的引擎。
         private bool m_focused = true; // 系统焦点状态。
         private bool m_systemPaused; // 系统挂起状态。
@@ -68,8 +68,7 @@ namespace AlloyFramework.Audio.Wwise
             { throw new InvalidOperationException("SoundBank 制作版本与当前 Wwise SDK 不匹配，请重新生成。"); }
             m_session = session;
             m_ended = ended;
-            m_initDirectory = Path.Combine(Application.persistentDataPath, "AlloyWwise", Guid.NewGuid().ToString("N"));
-            Directory.CreateDirectory(m_initDirectory);
+            m_initDirectory = CreateReadDirectory();
             try
             {
                 // 复用 SDK 设置数据，初始化和回调泵所有权由框架独占。
@@ -99,7 +98,13 @@ namespace AlloyFramework.Audio.Wwise
                 pin = GCHandle.Alloc(communication);
                 try { AkUnitySoundEngine.InitCommunication(communication); }
                 finally { pin.Free(); }
+#if UNITY_ANDROID && !UNITY_EDITOR
+                // Android 的 SetBasePath 面向 APK assets，磁盘上的符号链接目录必须走 POSIX 搜索路径。
+                Check(AkUnitySoundEngine.AddBasePath(m_initDirectory), "登记 Android 音频文件目录");
+#else
                 Check(AkUnitySoundEngine.SetBasePath(m_initDirectory), "设置初始化目录");
+#endif
+                // 只有目录已交给对应平台的原生文件读取器后，才能标记为已登记。
                 m_searchRoots.Add(m_initDirectory);
                 // 当前自动 Bank 输出使用 Event、Bus、Media 目录，兼容项目关闭原生子目录开关的设置。
                 AddSearchDirectory("Event");
@@ -324,7 +329,7 @@ namespace AlloyFramework.Audio.Wwise
             m_groups.Add(content, group);
             try
             {
-                // 按实际目录读取；哈希文件名只建立硬链接，共享文件保留到最后一个组卸载。
+                // 按实际目录读取；哈希文件名只建立平台链接，共享文件保留到最后一个组卸载。
                 foreach (AudioContentFile file in content.Group.Files)
                 {
                     string sourcePath = Path.GetFullPath(content.GetFilePath(file.Path));
@@ -356,8 +361,15 @@ namespace AlloyFramework.Audio.Wwise
                 {
                     uint id;
                     uint type = BankType(bank.Type);
-                    Check(AkUnitySoundEngine.LoadBank(bank.Name, out id, type),
-                        $"加载 Bank {bank.Name}");
+                    AKRESULT result = AkUnitySoundEngine.LoadBank(bank.Name, out id, type);
+                    if (result != AKRESULT.AK_Success)
+                    {
+                        // 区分映射文件缺失与原生搜索目录错误，保留回收前的实际路径用于定位。
+                        m_fileReadPaths.TryGetValue(bank.Path, out string readPath);
+                        throw new InvalidOperationException(
+                            $"加载 Bank {bank.Name}：{result}，映射路径={readPath}，" +
+                            $"文件存在={File.Exists(readPath)}，会话目录={m_initDirectory}");
+                    }
                     group.Banks.Add(new NativeBank { ID = id, Type = type });
                 }
                 if (content.Group.PreparedEvents != null && content.Group.PreparedEvents.Length > 0)
@@ -409,7 +421,7 @@ namespace AlloyFramework.Audio.Wwise
 
         private void RegisterReadRoot(string root)
         {
-            // 目录只登记一次；文件原名或硬链接名称均遵循 SDK 的 Event、Bus、Media 寻址。
+            // 目录只登记一次；文件原名或链接名称均遵循 SDK 的 Event、Bus、Media 寻址。
             RegisterReadDirectory(root);
             RegisterReadDirectory(Path.Combine(root, "Event"));
             RegisterReadDirectory(Path.Combine(root, "Bus"));
@@ -430,6 +442,30 @@ namespace AlloyFramework.Audio.Wwise
             Check(AkUnitySoundEngine.RegisterGameObj(target, name), "注册音频对象");
             UpdatePosition(target, null, Vector3.zero);
             return target;
+        }
+
+        private static string CreateReadDirectory()
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            // persistentDataPath 通常位于模拟外部存储，文件名符号链接必须建在内部文件系统。
+            string storageRoot;
+            using (var unityPlayer = new AndroidJavaClass("com.unity3d.player.UnityPlayer"))
+            using (AndroidJavaObject activity = unityPlayer.GetStatic<AndroidJavaObject>("currentActivity"))
+            using (AndroidJavaObject filesDirectory = activity.Call<AndroidJavaObject>("getFilesDir"))
+            {
+                storageRoot = filesDirectory.Call<string>("getAbsolutePath");
+            }
+            if (string.IsNullOrWhiteSpace(storageRoot) || !Path.IsPathRooted(storageRoot))
+            {
+                throw new InvalidOperationException("无法获取 Wwise 所需的 Android 应用内部读取目录。");
+            }
+#else
+            string storageRoot = Application.persistentDataPath;
+#endif
+            // 每个引擎会话独占别名目录，卸载时只移除链接，不改动 YooAsset 的原缓存。
+            string readDirectory = Path.Combine(storageRoot, "AlloyWwise", Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(readDirectory);
+            return readDirectory;
         }
 
         private void AddSearchDirectory(string relativePath)

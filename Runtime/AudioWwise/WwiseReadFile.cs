@@ -5,10 +5,10 @@ using System.Runtime.InteropServices;
 
 namespace AlloyFramework.Audio.Wwise
 {
-    /// <summary>将资源文件直接交给 Wwise，必要时仅建立同一数据的文件名硬链接。</summary>
+    /// <summary>将资源文件交给 Wwise，必要时建立原文件名链接，不复制音频数据。</summary>
     internal sealed class WwiseReadFile : IDisposable
     {
-        private readonly string m_linkPath; // 仅删除框架创建的硬链接名称，不删除资源文件。
+        private readonly string m_linkPath; // 仅删除框架创建的链接名称，不删除资源文件。
         private string m_ownedLinkRoot; // 跨卷来源旁创建的独占链接目录，释放时一并清理。
         private bool m_disposed; // 避免重复删除链接。
 
@@ -42,7 +42,7 @@ namespace AlloyFramework.Audio.Wwise
                 return new WwiseReadFile(sourcePath, hash, root, null);
             }
 
-            // 哈希缓存文件名不能直接被 Wwise 按媒体 ID 找到；硬链接只增加名字，不复制数据。
+            // 哈希缓存文件名不能直接被 Wwise 按媒体 ID 找到；链接只增加名字，不复制数据。
             string ownedLinkRoot = null;
 #if UNITY_EDITOR_WIN || (UNITY_STANDALONE_WIN && !UNITY_EDITOR)
             if (!string.Equals(Path.GetPathRoot(sourcePath), Path.GetPathRoot(Path.GetFullPath(readRoot)),
@@ -62,7 +62,10 @@ namespace AlloyFramework.Audio.Wwise
                 Directory.CreateDirectory(Path.GetDirectoryName(linkPath));
 #if UNITY_EDITOR_WIN || (UNITY_STANDALONE_WIN && !UNITY_EDITOR)
                 bool linked = CreateHardLink(linkPath, sourcePath, IntPtr.Zero);
-#elif UNITY_IOS || UNITY_ANDROID || UNITY_EDITOR_OSX || UNITY_STANDALONE_OSX || UNITY_STANDALONE_LINUX
+#elif UNITY_ANDROID && !UNITY_EDITOR
+                // Android 外部存储不支持硬链接，别名放在应用内部目录并指向原缓存文件。
+                bool linked = CreateSymbolicLink(sourcePath, linkPath) == 0;
+#elif UNITY_IOS || UNITY_EDITOR_OSX || UNITY_STANDALONE_OSX || UNITY_STANDALONE_LINUX
                 bool linked = Link(sourcePath, linkPath) == 0;
 #else
                 bool linked = false;
@@ -70,9 +73,15 @@ namespace AlloyFramework.Audio.Wwise
                 if (!linked)
                 {
                     int errorCode = Marshal.GetLastWin32Error();
+#if UNITY_ANDROID && !UNITY_EDITOR
+                    throw new IOException(
+                        "无法建立 Wwise 文件名符号链接，请确认读取目录位于应用内部存储且来源文件可读：" +
+                        sourcePath + " -> " + linkPath + $"，errno={errorCode}", new Win32Exception(errorCode));
+#else
                     throw new IOException(
                         "无法建立 Wwise 文件名硬链接，请确保音频来源目录同卷可写，或使用自定义 Wwise I/O：" +
                         sourcePath + " -> " + linkPath, new Win32Exception(errorCode));
+#endif
                 }
                 return new WwiseReadFile(sourcePath, hash, readRoot, linkPath)
                 {
@@ -90,7 +99,7 @@ namespace AlloyFramework.Audio.Wwise
             }
         }
 
-        /// <summary>原生卸载后移除文件名硬链接，原始资源仍由内容租约管理。</summary>
+        /// <summary>原生卸载后移除文件名链接，原始资源仍由内容租约管理。</summary>
         public void Dispose()
         {
             if (m_disposed) { return; }
@@ -108,10 +117,13 @@ namespace AlloyFramework.Audio.Wwise
             ExactSpelling = true, SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool CreateHardLink(string fileName, string existingFileName, IntPtr security);
+#elif UNITY_ANDROID && !UNITY_EDITOR
+        [DllImport("libc", EntryPoint = "symlink", SetLastError = true)]
+        private static extern int CreateSymbolicLink(string existingPath, string newPath);
 #elif UNITY_IOS && !UNITY_EDITOR
         [DllImport("__Internal", EntryPoint = "link", SetLastError = true)]
         private static extern int Link(string existingPath, string newPath);
-#elif UNITY_ANDROID || UNITY_EDITOR_OSX || UNITY_STANDALONE_OSX || UNITY_STANDALONE_LINUX
+#elif UNITY_EDITOR_OSX || UNITY_STANDALONE_OSX || UNITY_STANDALONE_LINUX
         [DllImport("libc", EntryPoint = "link", SetLastError = true)]
         private static extern int Link(string existingPath, string newPath);
 #endif
