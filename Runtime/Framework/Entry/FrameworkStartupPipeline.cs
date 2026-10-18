@@ -106,7 +106,7 @@ namespace AlloyFramework
                 }
             }
 
-            ShutdownSystems();
+            await ShutdownSystemsAsync();
         }
 
         internal void ShutdownImmediately()
@@ -118,6 +118,29 @@ namespace AlloyFramework
             m_context.IsGameEntryStarted = false;
             m_context.IsGameStartupStarted = false;
             ShutdownSystems();
+        }
+
+        private async UniTask ShutdownSystemsAsync()
+        {
+            // 逐个等待系统释放，确保音频任务退出后资源服务才会关闭；单个失败不阻断后续清理。
+            for (int index = m_context.InitializedSystems.Count - 1; index >= 0; index--)
+            {
+                try
+                {
+                    await m_context.InitializedSystems[index].ShutdownAsync();
+                }
+                catch (Exception exception)
+                {
+                    AlloyDebug.Error(exception);
+                }
+            }
+
+            m_context.InitializedSystems.Clear();
+            m_context.Services.Clear();
+            m_context.GameStartup = null;
+            m_context.GameEntry = null;
+            m_context.IsGameStartupCompleted = false;
+            m_context.IsInitialized = false;
         }
 
         private void ShutdownSystems()
