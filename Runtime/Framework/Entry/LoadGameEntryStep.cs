@@ -4,7 +4,7 @@ using Cysharp.Threading.Tasks;
 
 namespace AlloyFramework
 {
-    /// <summary>根据共享配置创建加载器，再从准备好的业务程序集中创建入口。</summary>
+    /// <summary>从代码准备结果创建唯一业务入口。</summary>
     internal sealed class LoadGameEntryStep : IFrameworkStartupStep
     {
         /// <summary>当前启动步骤的日志名称。</summary>
@@ -21,10 +21,8 @@ namespace AlloyFramework
         public async UniTask ExecuteAsync(FrameworkStartupContext context, CancellationToken cancellationToken)
         {
             StartupLoading.BeginFrameworkStep(EStartupLoadingStage.PreparingGameCode, Name);
-            // 两种代码模式的入口加载器都读取前面步骤提交的同一准备结果。
-            var gameEntryLoader = (IGameEntryLoader)Activator.CreateInstance(
-                context.Configuration.GameEntryLoaderType,
-                context.CodePreparationResult);
+            // 代码模式差异已在准备阶段处理，此处只消费已提交的程序集。
+            var gameEntryLoader = new PreparedGameEntryLoader(context.CodePreparationResult);
             context.GameEntry = await gameEntryLoader.LoadAsync(context.Services, cancellationToken);
             if (context.GameEntry == null)
             {
