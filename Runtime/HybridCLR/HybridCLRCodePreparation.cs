@@ -1,3 +1,4 @@
+using UnityEngine.Scripting;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -29,6 +30,7 @@ namespace AlloyFramework.HybridCLR
         /// <param name="runtimeAssemblyName">业务程序集名称。</param>
         /// <param name="installerTypeName">显式安装入口类型名称。</param>
         /// <exception cref="ArgumentNullException">参数为空。</exception>
+        [Preserve]
         public HybridCLRCodePreparation(
             GameCodePreparationResult result,
             string runtimeAssemblyName,
@@ -46,7 +48,30 @@ namespace AlloyFramework.HybridCLR
         /// <param name="cancellationToken">取消启动的令牌。</param>
         /// <returns>代码及配置安装完成的异步操作。</returns>
         /// <exception cref="InvalidOperationException">基线不匹配或代码安装失败。</exception>
-        public async UniTask PrepareAsync(FrameworkContext context, CancellationToken cancellationToken)
+        public UniTask PrepareAsync(FrameworkContext context, CancellationToken cancellationToken)
+        {
+#if UNITY_EDITOR
+            // 编辑器仅复用已加载程序集，无需异步状态机；异常仍通过任务传给调用方。
+            try
+            {
+                PrepareEditor(cancellationToken);
+                return UniTask.CompletedTask;
+            }
+            catch (Exception exception)
+            {
+                return UniTask.FromException(exception);
+            }
+#else
+            // Player 保留资源读取、文件校验和程序集加载的真实异步流程。
+            return PreparePlayerAsync(cancellationToken);
+#endif
+        }
+
+#if UNITY_EDITOR
+        private void PrepareEditor(CancellationToken cancellationToken)
+#else
+        private async UniTask PreparePlayerAsync(CancellationToken cancellationToken)
+#endif
         {
             if (m_started)
             {

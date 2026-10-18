@@ -6,8 +6,7 @@ using UnityEngine.SceneManagement;
 
 namespace AlloyFramework
 {
-    [FrameworkSystem(FrameworkSystemPriority.Resource)]
-    internal sealed class ResourceSystem : FrameworkSystem, IAssetService, IHotUpdateService, IRawFileService
+    internal sealed class ResourceServiceManager : FrameworkSystem, IAssetService, IHotUpdateService, IRawFileService
     {
         private IAssetService _implementation;
 
@@ -17,7 +16,7 @@ namespace AlloyFramework
         {
             _implementation = ResourceSettings.ServiceFactory?.Invoke() ?? new YooAssetService();
             if (ReferenceEquals(_implementation, this))
-                throw new InvalidOperationException("Resource implementation cannot be the ResourceSystem wrapper.");
+                throw new InvalidOperationException("Resource implementation cannot be the ResourceServiceManager wrapper.");
 
             try
             {

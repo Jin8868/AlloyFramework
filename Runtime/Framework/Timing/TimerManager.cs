@@ -3,8 +3,7 @@ using Cysharp.Threading.Tasks;
 
 namespace AlloyFramework.Timing
 {
-    [FrameworkSystem(FrameworkSystemPriority.Timer)]
-    internal sealed class TimerSystem : FrameworkSystem
+    internal sealed class TimerManager : FrameworkSystem
     {
         public override UniTask InitializeAsync(FrameworkContext context, CancellationToken cancellationToken)
         {

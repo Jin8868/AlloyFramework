@@ -8,7 +8,6 @@ namespace AlloyFramework
     /// <summary>
     /// 在 Unity 主线程管理按类型唯一的 Model 实例及其生命周期。
     /// </summary>
-    [FrameworkSystem(FrameworkSystemPriority.Model)]
     public sealed class ModelManager : FrameworkSystem
     {
         private readonly Dictionary<Type, ModelRegistration> m_registrations =

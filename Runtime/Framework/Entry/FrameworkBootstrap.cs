@@ -1,115 +1,101 @@
 using System;
-using System.Collections.Generic;
-using System.Reflection;
 using System.Threading;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
 
 namespace AlloyFramework
 {
+    /// <summary>协调框架自动启动、业务交接和退出清理。</summary>
     public static class FrameworkBootstrap
     {
-        private const string StartupScreenObjectName = "FrameworkSplash";
+        private const string STARTUPSCREENOBJECTNAME = "FrameworkSplash"; // 启动场景中的旧启动画面名称。
 
-        private static readonly List<FrameworkSystem> InitializedSystems =
-            new List<FrameworkSystem>();
+        private static FrameworkStartupContext m_startupContext; // 本轮系统和业务入口的生命周期状态。
+        private static FrameworkStartupPipeline m_startupPipeline; // 显式注册的启动执行顺序。
+        private static CancellationTokenSource m_startupCancellation; // 本轮启动和运行的取消源。
+        private static GameObject m_startupScreen; // 启动场景中的旧启动画面对象。
+        private static bool m_isStarting; // 是否正在执行完整启动流程。
+        private static bool m_isShuttingDown; // 防止退出清理重入。
 
-        private static IGameCodePreparation m_codePreparation; // 资源就绪后执行的可选代码准备服务。
-        private static FrameworkContext _context;
-        private static IGameEntryLoader _gameEntryLoader;
-        private static IGameEntry _gameEntry;
-        private static CancellationTokenSource _startupCancellation;
-        private static GameObject _startupScreen;
-        private static bool _isStarting;
-        private static bool _isInitialized;
-        private static bool _isShuttingDown;
-        private static bool _isGameEntryStarted;
+        /// <summary>框架是否正在启动，包含业务启动阶段。</summary>
+        public static bool IsStarting => m_isStarting;
 
-        public static bool IsStarting => _isStarting;
+        /// <summary>框架系统是否已就绪，业务入口此时可能尚未执行完成。</summary>
+        public static bool IsInitialized => m_startupContext != null && m_startupContext.IsInitialized;
 
-        public static bool IsInitialized => _isInitialized;
-
-        public static event Action<Type, int, int> SystemInitializing;
-
+        /// <summary>所有框架系统就绪后触发。</summary>
         public static event Action Initialized;
 
+        /// <summary>启动失败并完成退出清理后触发。</summary>
         public static event Action<Exception> StartupFailed;
 
-        /// <summary>
-        /// 销毁框架启动时保存的启动画面。没有找到或已经销毁时不会执行任何操作。
-        /// </summary>
+        /// <summary>销毁框架启动时保存的启动画面；对象不存在时不执行操作。</summary>
         public static void DestroyStartupScreen()
         {
-            var startupScreen = _startupScreen != null ? _startupScreen : GameObject.Find(StartupScreenObjectName);
-            _startupScreen = null;
-            if (startupScreen != null) UnityEngine.Object.Destroy(startupScreen);
-        }
-
-        public static void SetGameEntryLoader(IGameEntryLoader gameEntryLoader)
-        {
-            if (gameEntryLoader == null)
-                throw new ArgumentNullException(nameof(gameEntryLoader));
-            if (_isStarting || _isInitialized)
-                throw new InvalidOperationException(
-                    "The game entry loader must be injected before framework startup.");
-            if (_gameEntryLoader != null)
-                throw new InvalidOperationException(
-                    "The game entry loader has already been injected.");
-
-            _gameEntryLoader = gameEntryLoader;
-        }
-
-        /// <summary>
-        /// 在框架启动前注入可选的业务代码准备服务。
-        /// </summary>
-        /// <param name="codePreparation">代码准备服务。</param>
-        /// <exception cref="ArgumentNullException">服务为空。</exception>
-        /// <exception cref="InvalidOperationException">已开始启动或服务已注入。</exception>
-        public static void SetGameCodePreparation(IGameCodePreparation codePreparation)
-        {
-            if (codePreparation == null)
+            var startupScreen = m_startupScreen != null
+                ? m_startupScreen
+                : GameObject.Find(STARTUPSCREENOBJECTNAME);
+            m_startupScreen = null;
+            if (startupScreen != null)
             {
-                throw new ArgumentNullException(nameof(codePreparation));
+                UnityEngine.Object.Destroy(startupScreen);
             }
-            if (_isStarting || _isInitialized || m_codePreparation != null)
-            {
-                throw new InvalidOperationException("代码准备服务必须在框架启动前且只注入一次。");
-            }
-            m_codePreparation = codePreparation;
         }
+
+        /// <summary>获取本轮已经注册的框架服务。</summary>
+        /// <typeparam name="TService">请求的服务类型。</typeparam>
+        /// <returns>已初始化的服务实例。</returns>
+        /// <exception cref="InvalidOperationException">框架尚未启动或请求的服务尚未注册。</exception>
         public static TService GetRequired<TService>() where TService : class
         {
-            if (_context == null)
+            if (m_startupContext == null)
             {
-                throw new InvalidOperationException("The framework has not started.");
+                throw new InvalidOperationException("框架尚未启动。");
             }
 
-            return _context.GetRequired<TService>();
+            return m_startupContext.Services.GetRequired<TService>();
+        }
+
+        /// <summary>取消启动，等待业务退出并逆序关闭已经就绪的框架系统。</summary>
+        /// <returns>本次退出清理任务；重入调用不重复清理。</returns>
+        public static async UniTask ShutdownAsync()
+        {
+            if (m_isShuttingDown)
+            {
+                return;
+            }
+
+            m_isShuttingDown = true;
+            m_startupCancellation?.Cancel();
+            StartupLoading.Cancel();
+            try
+            {
+                if (m_startupPipeline != null)
+                {
+                    await m_startupPipeline.ShutdownAsync();
+                }
+            }
+            finally
+            {
+                CompleteShutdown();
+            }
         }
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         private static void ResetStatics()
         {
+            // 关闭域重载时也清除上一轮订阅、服务注入和状态。
             Application.quitting -= HandleApplicationQuitting;
             UniTaskScheduler.UnobservedTaskException -= HandleUnobservedTaskException;
-
             ResetObjectPools();
-
-            _startupCancellation?.Cancel();
-            _startupCancellation?.Dispose();
-            _startupCancellation = null;
-            _startupScreen = null;
-            _context = null;
-            _gameEntryLoader = null;
-            m_codePreparation = null;
-            _gameEntry = null;
-            _isStarting = false;
-            _isInitialized = false;
-            _isShuttingDown = false;
-            _isGameEntryStarted = false;
-
-            InitializedSystems.Clear();
-            SystemInitializing = null;
+            m_startupCancellation?.Cancel();
+            m_startupCancellation?.Dispose();
+            m_startupCancellation = null;
+            m_startupScreen = null;
+            m_startupContext = null;
+            m_startupPipeline = null;
+            m_isStarting = false;
+            m_isShuttingDown = false;
             Initialized = null;
             StartupFailed = null;
         }
@@ -117,90 +103,86 @@ namespace AlloyFramework
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
         private static void Startup()
         {
-            if (_isStarting || _isInitialized)
+            if (m_isStarting || IsInitialized)
             {
                 return;
             }
 
-            var startupStartedAt = FrameworkStartupLog.Now;
+            // 这里只创建共享状态，主包配置由管线的第一个步骤读取。
+            var startedAt = FrameworkStartupLog.Now;
             FrameworkStartupLog.Info("开始启动框架");
-            _context = new FrameworkContext();
-            _startupCancellation = new CancellationTokenSource();
-
+            m_startupContext = new FrameworkStartupContext();
+            m_startupCancellation = new CancellationTokenSource();
+            m_isStarting = true;
             Application.quitting += HandleApplicationQuitting;
             UniTaskScheduler.UnobservedTaskException += HandleUnobservedTaskException;
-
-            RunStartupAsync(_startupCancellation.Token, startupStartedAt).Forget(HandleStartupException);
+            RunStartupAsync(m_startupCancellation.Token, startedAt).Forget(HandleStartupException);
         }
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void CaptureStartupScreen()
         {
-            _startupScreen = GameObject.Find(StartupScreenObjectName);
+            m_startupScreen = GameObject.Find(STARTUPSCREENOBJECTNAME);
         }
 
-        public static async UniTask ShutdownAsync()
+        private static async UniTask RunStartupAsync(CancellationToken cancellationToken, double startedAt)
         {
-            if (_isShuttingDown)
+            try
             {
-                return;
+                // 内置展示真正绘制后，才创建系统并执行资源和代码准备。
+                await StartupLoading.BeginAsync(cancellationToken);
+                m_startupPipeline = new FrameworkStartupPipeline(m_startupContext);
+                StartupLoading.ConfigureSteps(m_startupPipeline.StepCount);
+                await m_startupPipeline.RunAsync(cancellationToken);
+                FrameworkStartupLog.Step("完整启动（含业务入口）", startedAt);
             }
-
-            _isShuttingDown = true;
-            _startupCancellation?.Cancel();
-            StartupLoading.Cancel();
-
-            if (_isGameEntryStarted)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                try
-                {
-                    await _gameEntry.ShutdownAsync();
-                }
-                catch (Exception exception)
-                {
-                    AlloyDebug.Error(exception);
-                }
-
-                _isGameEntryStarted = false;
+                FrameworkStartupLog.Info("框架启动取消");
+                await ShutdownAsync();
             }
-
-            ShutdownSystems();
+            catch (Exception exception)
+            {
+                // 在清理前冻结状态，保留完全内置的错误界面。
+                StartupLoading.Fail(exception);
+                FrameworkStartupLog.Failure("框架启动", startedAt);
+                await ShutdownAsync();
+                StartupFailed?.Invoke(exception);
+                throw;
+            }
+            finally
+            {
+                m_isStarting = false;
+            }
         }
 
         private static void ShutdownImmediately()
         {
-            if (_isShuttingDown)
+            if (m_isShuttingDown)
             {
                 return;
             }
 
-            _isShuttingDown = true;
-            _startupCancellation?.Cancel();
+            // 进程退出不能等待异步业务清理，直接关闭框架系统。
+            m_isShuttingDown = true;
+            m_startupCancellation?.Cancel();
             StartupLoading.Cancel();
-            _isGameEntryStarted = false;
-            ShutdownSystems();
+            try
+            {
+                m_startupPipeline?.ShutdownImmediately();
+            }
+            finally
+            {
+                CompleteShutdown();
+            }
         }
 
-        private static void ShutdownSystems()
+        private static void CompleteShutdown()
         {
-            for (var index = InitializedSystems.Count - 1; index >= 0; index--)
-            {
-                try
-                {
-                    InitializedSystems[index].Shutdown();
-                }
-                catch (Exception exception)
-                {
-                    AlloyDebug.Error(exception);
-                }
-            }
-
-            InitializedSystems.Clear();
             ResetObjectPools();
-            _context?.Clear();
-            _isInitialized = false;
-            _isStarting = false;
-            _isShuttingDown = false;
+            m_startupPipeline = null;
+            m_isStarting = false;
+            m_isShuttingDown = false;
         }
 
         private static void ResetObjectPools()
@@ -215,208 +197,9 @@ namespace AlloyFramework
             }
         }
 
-        private static async UniTask RunStartupAsync(CancellationToken cancellationToken,
-            double startupStartedAt)
+        internal static void HandleInitialized()
         {
-            _isStarting = true;
-
-            try
-            {
-                // 先等待内置展示真正绘制，版本检查和资源初始化不能早于此处。
-                await StartupLoading.BeginAsync(cancellationToken);
-                var discoveryStartedAt = FrameworkStartupLog.Now;
-                var descriptors = DiscoverFrameworkSystems();
-                StartupLoading.ConfigureSteps(descriptors.Count + (m_codePreparation == null ? 0 : 1) + 2);
-                FrameworkStartupLog.Step($"发现 {descriptors.Count} 个框架系统", discoveryStartedAt);
-
-                for (var index = 0; index < descriptors.Count; index++)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-
-                    var descriptor = descriptors[index];
-                    var systemName = descriptor.SystemType.FullName;
-                    var systemStartedAt = FrameworkStartupLog.Now;
-                    FrameworkStartupLog.Info($"开始初始化框架系统 ({index + 1}/{descriptors.Count}): {systemName}");
-                    try
-                    {
-                        StartupLoading.BeginFrameworkStep(
-                            EStartupLoadingStage.InitializingSystems, "初始化 " + descriptor.SystemType.Name);
-                        SystemInitializing?.Invoke(descriptor.SystemType, index + 1, descriptors.Count);
-                        var system = CreateSystem(descriptor.SystemType);
-                        await system.InitializeAsync(_context, cancellationToken);
-                        _context.Register(system);
-                        InitializedSystems.Add(system);
-                        cancellationToken.ThrowIfCancellationRequested();
-                        StartupLoading.CompleteFrameworkStep();
-                        // 资源系统已经绑定，后续配置系统必须看到本次加载的业务代码。
-                        if (system is ResourceSystem && m_codePreparation != null)
-                        {
-                            StartupLoading.BeginFrameworkStep(
-                                EStartupLoadingStage.PreparingGameCode, "准备游戏代码");
-                            await m_codePreparation.PrepareAsync(_context, cancellationToken);
-                            cancellationToken.ThrowIfCancellationRequested();
-                            StartupLoading.CompleteFrameworkStep();
-                        }
-                        FrameworkStartupLog.Step($"框架系统 {systemName}", systemStartedAt);
-                    }
-                    catch
-                    {
-                        FrameworkStartupLog.Failure($"框架系统 {systemName}", systemStartedAt);
-                        throw;
-                    }
-                }
-
-                _isInitialized = true;
-                var callbackStartedAt = FrameworkStartupLog.Now;
-                try
-                {
-                    StartupLoading.BeginFrameworkStep(EStartupLoadingStage.InitializingSystems, "完成框架初始化回调");
-                    Initialized?.Invoke();
-                    cancellationToken.ThrowIfCancellationRequested();
-                    StartupLoading.CompleteFrameworkStep();
-                    FrameworkStartupLog.Step("初始化回调", callbackStartedAt);
-                }
-                catch
-                {
-                    FrameworkStartupLog.Failure("初始化回调", callbackStartedAt);
-                    throw;
-                }
-                FrameworkStartupLog.Info($"框架启动完成，总耗时 {FrameworkStartupLog.ElapsedMilliseconds(startupStartedAt):F1} ms");
-
-                if (_gameEntryLoader == null)
-                    throw new InvalidOperationException(
-                        "The project must inject an IGameEntryLoader before framework startup.");
-
-                var loaderStartedAt = FrameworkStartupLog.Now;
-                FrameworkStartupLog.Info($"开始加载业务入口: {_gameEntryLoader.GetType().FullName}");
-                try
-                {
-                    StartupLoading.BeginFrameworkStep(EStartupLoadingStage.PreparingGameCode, "加载业务入口");
-                    _gameEntry = await _gameEntryLoader.LoadAsync(_context, cancellationToken);
-                    if (_gameEntry == null)
-                        throw new InvalidOperationException(
-                            $"Game entry loader {_gameEntryLoader.GetType().FullName} returned null.");
-                    cancellationToken.ThrowIfCancellationRequested();
-                    StartupLoading.CompleteFrameworkStep();
-                    FrameworkStartupLog.Step("加载业务入口", loaderStartedAt);
-                }
-                catch
-                {
-                    FrameworkStartupLog.Failure("加载业务入口", loaderStartedAt);
-                    throw;
-                }
-
-                // 框架只交出控制权，不关闭界面；业务自行决定关闭或继续加载。
-                StartupLoading.HandOver();
-                await UniTask.NextFrame(cancellationToken);
-                _isGameEntryStarted = true;
-                var gameEntryStartedAt = FrameworkStartupLog.Now;
-                FrameworkStartupLog.Info($"开始执行业务入口: {_gameEntry.GetType().FullName}");
-                try
-                {
-                    await _gameEntry.MainAsync(cancellationToken);
-                    FrameworkStartupLog.Step("业务入口", gameEntryStartedAt);
-                    FrameworkStartupLog.Info(
-                        $"完整启动完成（含业务入口），总耗时 {FrameworkStartupLog.ElapsedMilliseconds(startupStartedAt):F1} ms");
-                }
-                catch
-                {
-                    FrameworkStartupLog.Failure("业务入口", gameEntryStartedAt);
-                    throw;
-                }
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                FrameworkStartupLog.Info($"框架启动取消，已耗时 {FrameworkStartupLog.ElapsedMilliseconds(startupStartedAt):F1} ms");
-                await ShutdownAsync();
-            }
-            catch (Exception exception)
-            {
-                // 在资源清理前冻结状态，保留完全内置的错误界面。
-                StartupLoading.Fail(exception);
-                FrameworkStartupLog.Failure("框架启动", startupStartedAt);
-                await ShutdownAsync();
-                StartupFailed?.Invoke(exception);
-                throw;
-            }
-            finally
-            {
-                _isStarting = false;
-            }
-        }
-
-        private static List<SystemDescriptor> DiscoverFrameworkSystems()
-        {
-            var descriptors = new List<SystemDescriptor>();
-            var assemblies = AppDomain.CurrentDomain.GetAssemblies();
-
-            for (var assemblyIndex = 0; assemblyIndex < assemblies.Length; assemblyIndex++)
-            {
-                var types = GetLoadableTypes(assemblies[assemblyIndex]);
-
-                for (var typeIndex = 0; typeIndex < types.Length; typeIndex++)
-                {
-                    var type = types[typeIndex];
-                    if (type == null ||
-                        type.IsAbstract ||
-                        type.IsGenericTypeDefinition ||
-                        !typeof(FrameworkSystem).IsAssignableFrom(type))
-                    {
-                        continue;
-                    }
-
-                    var attribute = type.GetCustomAttribute<FrameworkSystemAttribute>(false);
-                    if (attribute == null)
-                    {
-                        continue;
-                    }
-
-                    descriptors.Add(new SystemDescriptor(type, attribute.Priority));
-                }
-            }
-
-            descriptors.Sort(CompareDescriptors);
-            return descriptors;
-        }
-
-        private static Type[] GetLoadableTypes(Assembly assembly)
-        {
-            try
-            {
-                return assembly.GetTypes();
-            }
-            catch (ReflectionTypeLoadException exception)
-            {
-                return exception.Types;
-            }
-        }
-
-        private static FrameworkSystem CreateSystem(Type systemType)
-        {
-            try
-            {
-                return (FrameworkSystem)Activator.CreateInstance(systemType, true);
-            }
-            catch (Exception exception)
-            {
-                throw new InvalidOperationException(
-                    $"Framework system requires a parameterless constructor: {systemType.FullName}",
-                    exception);
-            }
-        }
-
-        private static int CompareDescriptors(SystemDescriptor left, SystemDescriptor right)
-        {
-            var priorityComparison = left.Priority.CompareTo(right.Priority);
-            if (priorityComparison != 0)
-            {
-                return priorityComparison;
-            }
-
-            return string.Compare(
-                left.SystemType.FullName,
-                right.SystemType.FullName,
-                StringComparison.Ordinal);
+            Initialized?.Invoke();
         }
 
         private static void HandleApplicationQuitting()
@@ -426,42 +209,12 @@ namespace AlloyFramework
 
         private static void HandleStartupException(Exception exception)
         {
-            AlloyDebug.Error($"[AlloyFramewrokStartup] {exception}");
+            AlloyDebug.Error(exception);
         }
 
         private static void HandleUnobservedTaskException(Exception exception)
         {
             AlloyDebug.Error(exception);
         }
-
-        private sealed class SystemDescriptor
-        {
-            public SystemDescriptor(Type systemType, FrameworkSystemPriority priority)
-            {
-                SystemType = systemType;
-                Priority = priority;
-            }
-
-            public Type SystemType { get; }
-
-            public FrameworkSystemPriority Priority { get; }
-        }
-    }
-
-    internal static class FrameworkStartupLog
-    {
-        private const string Prefix = "[AlloyFramewrokStartup]";
-
-        internal static double Now => Time.realtimeSinceStartupAsDouble;
-
-        internal static double ElapsedMilliseconds(double startedAt) => (Now - startedAt) * 1000d;
-
-        internal static void Info(string message) => AlloyDebug.Log($"{Prefix} {message}");
-
-        internal static void Step(string name, double startedAt) =>
-            Info($"{name} 完成，耗时 {ElapsedMilliseconds(startedAt):F1} ms");
-
-        internal static void Failure(string name, double startedAt) =>
-            AlloyDebug.Error($"{Prefix} {name} 失败，耗时 {ElapsedMilliseconds(startedAt):F1} ms");
     }
 }

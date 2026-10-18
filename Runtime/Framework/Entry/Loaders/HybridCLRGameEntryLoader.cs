@@ -1,3 +1,4 @@
+using UnityEngine.Scripting;
 using System;
 using System.Threading;
 using Cysharp.Threading.Tasks;
@@ -16,6 +17,7 @@ namespace AlloyFramework
         /// </summary>
         /// <param name="result">代码准备结果。</param>
         /// <exception cref="ArgumentNullException">结果为空。</exception>
+        [Preserve]
         public HybridCLRGameEntryLoader(GameCodePreparationResult result)
         {
             m_result = result ?? throw new ArgumentNullException(nameof(result));

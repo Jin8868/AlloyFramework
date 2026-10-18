@@ -6,7 +6,6 @@ using UnityEngine;
 
 namespace AlloyFramework.UI
 {
-    [FrameworkSystem(FrameworkSystemPriority.UI)]
     public sealed class UIManager : FrameworkSystem
     {
         private readonly Dictionary<string, UIDefinition> m_definitions =

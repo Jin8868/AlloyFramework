@@ -3,8 +3,7 @@ using Cysharp.Threading.Tasks;
 
 namespace AlloyFramework
 {
-    [FrameworkSystem(FrameworkSystemPriority.GameLoop)]
-    internal sealed class GameLoopSystem : FrameworkSystem
+    internal sealed class GameLoopManager : FrameworkSystem
     {
         public override UniTask InitializeAsync(
             FrameworkContext context,

@@ -6,7 +6,6 @@ using Cysharp.Threading.Tasks;
 namespace AlloyFramework.Net
 {
     /// <summary>在 Model 之后初始化、Model 之前关闭的多会话网络管理器。</summary>
-    [FrameworkSystem((FrameworkSystemPriority)2900)]
     public sealed class NetworkManager : FrameworkSystem, IUpdateable
     {
         private readonly List<NetworkSession> m_sessions = new List<NetworkSession>(); // 管理中的会话。

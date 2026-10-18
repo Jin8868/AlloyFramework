@@ -3,8 +3,7 @@ using Cysharp.Threading.Tasks;
 
 namespace AlloyFramework
 {
-    [FrameworkSystem(FrameworkSystemPriority.Config)]
-    internal sealed class ConfigSystem : FrameworkSystem, IConfigService
+    internal sealed class ConfigManager : FrameworkSystem, IConfigService
     {
         private bool m_isLoaded; // 配置全量加载状态。
 

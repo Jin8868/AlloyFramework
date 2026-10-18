@@ -3,8 +3,7 @@ using Cysharp.Threading.Tasks;
 
 namespace AlloyFramework.Audio
 {
-    [FrameworkSystem(FrameworkSystemPriority.Audio)]
-    internal sealed class AudioSystem : FrameworkSystem
+    internal sealed class AudioLifecycleManager : FrameworkSystem
     {
         /// <summary>安装音频主线程管理，具体引擎由业务启动步骤安装。</summary>
         /// <param name="context">框架上下文。</param>
