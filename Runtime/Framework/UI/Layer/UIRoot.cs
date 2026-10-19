@@ -3,12 +3,16 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.UI;
+using UnityEventSystem = UnityEngine.EventSystems.EventSystem;
 
 namespace AlloyFramework.UI
 {
     [DisallowMultipleComponent]
     public sealed class UIRoot : MonoBehaviour, IUpdateable
     {
+        private readonly List<UnityEventSystem> m_suspendedEventSystems =
+            new List<UnityEventSystem>(); // UI 接管前临时停用的输入组件。
+        private UnityEventSystem m_eventSystem; // 当前 UI 根节点拥有的输入组件。
         private readonly List<Canvas> m_canvases = new List<Canvas>(); // 已打开及缓存的独立界面画布。
         private Dictionary<UILayer, UILayerRoot> m_layers; // 八层逻辑容器。
         private RectTransform m_windowRoot; // 不挂 Canvas 的界面分类容器。
@@ -109,6 +113,46 @@ namespace AlloyFramework.UI
             m_screenAdaptationSystem = new UIScreenAdaptationSystem(HandleScreenAdaptationChanged);
             m_screenAdaptationSystem.Initialize();
             GameLoop.Register(this);
+            ActivateInput(eventSystems[0]);
+        }
+
+        private void ActivateInput(UnityEventSystem eventSystem)
+        {
+            // 预制体中的输入组件默认禁用；先停用启动回退输入，再启用业务 UI 输入。
+            m_eventSystem = eventSystem;
+            foreach (var existing in UnityEngine.Object.FindObjectsOfType<UnityEventSystem>())
+            {
+                if (existing == eventSystem || !existing.isActiveAndEnabled) continue;
+                m_suspendedEventSystems.Add(existing);
+                existing.enabled = false;
+            }
+
+            eventSystem.enabled = true;
+            UnityEventSystem.current = eventSystem;
+        }
+
+        private void ReleaseInput()
+        {
+            if (m_eventSystem != null) m_eventSystem.enabled = false;
+            m_eventSystem = null;
+            var current = UnityEventSystem.current;
+            bool hasActiveInput = current != null && current.isActiveAndEnabled;
+            foreach (var previous in m_suspendedEventSystems)
+            {
+                if (previous == null) continue;
+                // 日志回退节点可能已经自行隐藏，先恢复组件状态，供其按需重新启用对象。
+                if (!previous.gameObject.activeInHierarchy)
+                {
+                    previous.enabled = true;
+                }
+                else if (!hasActiveInput)
+                {
+                    previous.enabled = true;
+                    UnityEventSystem.current = previous;
+                    hasActiveInput = true;
+                }
+            }
+            m_suspendedEventSystems.Clear();
         }
 
         internal void ConfigureView(UIView view)
@@ -288,6 +332,7 @@ namespace AlloyFramework.UI
 
         private void OnDestroy()
         {
+            ReleaseInput();
             GameLoop.Unregister(this);
             m_screenAdaptationSystem?.Dispose();
             m_screenAdaptationSystem = null;
