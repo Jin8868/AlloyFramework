@@ -94,6 +94,57 @@ namespace AlloyFramework
             catch { Directory.Delete(directory, true); throw; }
         }
 
+        internal static UniTask<RawFileLease> TryLoadLocalAsync(
+            string location, CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrWhiteSpace(location)) { throw new ArgumentException("原始文件地址不能为空。", nameof(location)); }
+            cancellationToken.ThrowIfCancellationRequested();
+
+            // 本地文件直接借用，只有压缩包内部等无物理路径来源才需要落地。
+            if (location.StartsWith("file:", StringComparison.OrdinalIgnoreCase) &&
+                Uri.TryCreate(location, UriKind.Absolute, out Uri localAddress) && localAddress.IsFile &&
+                File.Exists(localAddress.LocalPath))
+            {
+                return UniTask.FromResult(Borrow(localAddress.LocalPath));
+            }
+            if (location.StartsWith("jar:", StringComparison.Ordinal) ||
+                location.StartsWith("file:", StringComparison.Ordinal))
+            {
+                return LoadAddressAsync(location, cancellationToken);
+            }
+
+            if (Path.IsPathRooted(location))
+            {
+                return UniTask.FromResult(Borrow(location));
+            }
+
+
+            return UniTask.FromResult<RawFileLease>(null);
+        }
+
+        private static async UniTask<RawFileLease> LoadAddressAsync(
+            string location, CancellationToken cancellationToken)
+        {
+            using (UnityWebRequest request = UnityWebRequest.Get(location))
+            {
+                try
+                {
+                    // 压缩包或非物理地址独立持有请求，取消时显式终止下载再归还操作。
+                    UnityWebRequestAsyncOperation requestOperation = request.SendWebRequest();
+                    while (!requestOperation.isDone)
+                        await UniTask.Yield(PlayerLoopTiming.Update, cancellationToken);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (request.result != UnityWebRequest.Result.Success) throw new IOException(request.error);
+                    return Create(request.downloadHandler.data);
+                }
+                catch
+                {
+                    request.Abort();
+                    throw;
+                }
+            }
+        }
+
         internal static async UniTask<RawFileLease> CopyAsync(string sourcePath,
             CancellationToken cancellationToken)
         {
@@ -135,38 +186,6 @@ namespace AlloyFramework
         public async UniTask<RawFileLease> LoadRawFileAsync(string location,
             string packageName = ResourceSettings.DefaultPackageName, CancellationToken cancellationToken = default)
         {
-            if (string.IsNullOrWhiteSpace(location)) { throw new ArgumentException("原始文件地址不能为空。", nameof(location)); }
-            cancellationToken.ThrowIfCancellationRequested();
-
-            // 本地文件直接借用，只有压缩包内部等无物理路径来源才需要落地。
-            if (location.StartsWith("file:", StringComparison.OrdinalIgnoreCase) &&
-                Uri.TryCreate(location, UriKind.Absolute, out Uri localAddress) && localAddress.IsFile &&
-                File.Exists(localAddress.LocalPath))
-            {
-                return RawFileLease.Borrow(localAddress.LocalPath);
-            }
-            if (location.StartsWith("jar:", StringComparison.Ordinal) ||
-                location.StartsWith("file:", StringComparison.Ordinal))
-            {
-                using (UnityWebRequest request = UnityWebRequest.Get(location))
-                {
-                    // 显式持有请求操作，通过逐帧等待保留统一的取消和错误处理。
-                    UnityWebRequestAsyncOperation requestOperation = request.SendWebRequest();
-                    while (!requestOperation.isDone)
-                    {
-                        await UniTask.Yield(PlayerLoopTiming.Update, cancellationToken);
-                    }
-                    if (request.result != UnityWebRequest.Result.Success) { throw new IOException(request.error); }
-                    cancellationToken.ThrowIfCancellationRequested();
-                    return RawFileLease.Create(request.downloadHandler.data);
-                }
-            }
-
-            if (Path.IsPathRooted(location))
-            {
-                return RawFileLease.Borrow(location);
-            }
-
             if (!(GetService() is IRawFileService rawFileService))
             {
                 throw new NotSupportedException("当前资源实现不支持原始文件加载。");

@@ -1,4 +1,4 @@
-using UnityEngine;
+using System.Diagnostics;
 
 namespace AlloyFramework
 {
@@ -7,7 +7,8 @@ namespace AlloyFramework
     {
         private const string PREFIX = "[AlloyFramewrokStartup]"; // 保留已有日志前缀，兼容现有筛选。
 
-        internal static double Now => Time.realtimeSinceStartupAsDouble;
+        // 使用不受 Play 状态切换影响的计时源，避免编辑器退出时产生负耗时。
+        internal static double Now => Stopwatch.GetTimestamp() / (double)Stopwatch.Frequency;
 
         internal static double ElapsedMilliseconds(double startedAt) => (Now - startedAt) * 1000d;
 

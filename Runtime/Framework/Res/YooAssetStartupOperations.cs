@@ -10,24 +10,34 @@ namespace AlloyFramework
     {
         internal static async UniTask WaitAsync(AsyncOperationBase operation, CancellationToken cancellationToken)
         {
-            // 按无进度时间超时，不限制持续产生进度的大文件下载总时长。
-            float previousProgress = operation.Progress;
-            float lastProgressTime = Time.realtimeSinceStartup;
-            while (!operation.IsDone)
+            try
             {
+                // 按无进度时间超时，不限制持续产生进度的大文件下载总时长。
+                float previousProgress = operation.Progress;
+                float lastProgressTime = Time.realtimeSinceStartup;
+                while (!operation.IsDone)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (operation.Progress != previousProgress)
+                    {
+                        previousProgress = operation.Progress;
+                        lastProgressTime = Time.realtimeSinceStartup;
+                    }
+                    if (Time.realtimeSinceStartup - lastProgressTime > ResourceSettings.OperationTimeoutSeconds)
+                    {
+                        throw new TimeoutException("资源启动操作等待超时，请检查服务器连接并重启。");
+                    }
+                    await UniTask.Yield(PlayerLoopTiming.Update, cancellationToken);
+                }
                 cancellationToken.ThrowIfCancellationRequested();
-                if (operation.Progress != previousProgress)
-                {
-                    previousProgress = operation.Progress;
-                    lastProgressTime = Time.realtimeSinceStartup;
-                }
-                if (Time.realtimeSinceStartup - lastProgressTime > ResourceSettings.OperationTimeoutSeconds)
-                {
-                    throw new TimeoutException("资源启动操作等待超时，请检查服务器连接并重启。");
-                }
-                await UniTask.Yield(PlayerLoopTiming.Update, cancellationToken);
+
             }
-            cancellationToken.ThrowIfCancellationRequested();
+            finally
+            {
+                // 取消外层等待不代表底层退出；下载可终止，其余操作保持服务有效直到完成。
+                if (!operation.IsDone && operation is DownloaderOperation downloader) downloader.CancelDownload();
+                while (!operation.IsDone) await UniTask.Yield(PlayerLoopTiming.Update);
+            }
         }
 
         internal static async UniTask DownloadAsync(ResourcePackage package, CancellationToken cancellationToken)

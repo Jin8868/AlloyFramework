@@ -13,17 +13,26 @@ namespace AlloyFramework.UI
         private readonly List<UIEntry> m_entries = new List<UIEntry>();
         private UINavigator m_navigator; // 配置驱动的 UI 导航器。
         private IUIDefinitionProvider m_definitionProvider; // 业务安装的 UI 定义提供器。
-        private CancellationTokenSource m_shutdown;
+        private CancellationTokenSource m_shutdown; // UI 生命周期取消源。
         private IInstanceHandle m_rootInstance;
         private UIRoot m_root;
         private long m_nextInstanceId;
         private long m_nextDisplayOrder; // 独立于物理父节点的递增显示顺序。
+        private readonly HashSet<UIEntry> m_releasingEntries = new HashSet<UIEntry>(); // 阻止释放回调重入。
+        private UniTaskCompletionSource m_operationsDrained; // 当前一批 UI 操作退出的通知。
+        private UniTaskCompletionSource m_shutdownCompleted; // 正常关闭共享结果。
+        private int m_activeOperationCount; // 包含导航准备与回滚的在途操作数量。
+        private bool m_isShuttingDown; // 拒绝新操作，等待现有操作退出。
         private UIBlurCoordinator m_blur; // 统一管理最高模糊界面的背景和渲染分离。
 
         internal UIManager() { }
 
         public static UIManager Instance { get; private set; }
 
+        /// <summary>加载并初始化 UI 根节点。</summary>
+        /// <param name="context">框架服务容器。</param>
+        /// <param name="cancellationToken">初始化取消令牌。</param>
+        /// <returns>UI 服务就绪的任务。</returns>
         public override async UniTask InitializeAsync(FrameworkContext context,
             CancellationToken cancellationToken)
         {
@@ -49,36 +58,99 @@ namespace AlloyFramework.UI
             }
             catch
             {
-                m_blur?.Dispose();
-                m_blur = null;
-                m_rootInstance?.Dispose();
-                m_rootInstance = null;
-                m_root = null;
-                m_shutdown.Dispose();
-                m_shutdown = null;
+                // 初始化失败尚未进入框架成功记录，使用逐项保护的同步清理保留原始异常。
+                Shutdown();
                 throw;
             }
         }
 
+        /// <summary>取消 UI 操作并等待其退出，再释放所有界面和根节点。</summary>
+        /// <returns>所有正常关闭调用者共享的清理任务。</returns>
+        /// <remarks>UI 操作及其回调内部只能请求关闭，不能等待整个管理器关闭。</remarks>
+        public override UniTask ShutdownAsync()
+        {
+            if (m_shutdownCompleted != null) return m_shutdownCompleted.Task;
+            var completion = new UniTaskCompletionSource();
+            m_shutdownCompleted = completion;
+            m_isShuttingDown = true;
+            RunShutdownAsync(completion).Forget(ReportAsyncException);
+            return completion.Task;
+        }
+
+        private async UniTask RunShutdownAsync(UniTaskCompletionSource completion)
+        {
+            try
+            {
+                try
+                {
+                    // 取消后保持 Controller、View 和根节点有效，直到所有操作完成回滚。
+                    var drained = m_activeOperationCount == 0 ? null : m_operationsDrained;
+                    CancelLifetime(m_shutdown);
+                    if (drained != null) await drained.Task;
+                }
+                finally
+                {
+                    Shutdown();
+                }
+                completion.TrySetResult();
+            }
+            catch (Exception exception)
+            {
+                completion.TrySetException(exception);
+            }
+        }
+
+        /// <summary>立即释放 UI；强制退出时不等待异步操作。</summary>
         public override void Shutdown()
         {
+            m_isShuttingDown = true;
+            CancelLifetime(m_shutdown);
             if (ReferenceEquals(Instance, this)) Instance = null;
-            m_shutdown?.Cancel();
             m_navigator?.Clear();
-            m_blur?.Dispose();
-            m_blur = null;
             var snapshot = m_entries.ToArray();
             foreach (var entry in snapshot) Release(entry);
             m_entries.Clear();
             m_definitions.Clear();
             m_definitionProvider = null;
-            m_rootInstance?.Dispose();
+            try { m_blur?.Dispose(); }
+            catch (Exception exception) { AlloyDebug.Error(exception); }
+            m_blur = null;
+            try { m_rootInstance?.Dispose(); }
+            catch (Exception exception) { AlloyDebug.Error(exception); }
             m_rootInstance = null;
             m_root = null;
             m_navigator = null;
             m_shutdown?.Dispose();
             m_shutdown = null;
         }
+
+        private CancellationTokenSource BeginOperation(CancellationToken cancellationToken)
+        {
+            EnsureReady();
+            cancellationToken.ThrowIfCancellationRequested();
+            var operation = CancellationTokenSource.CreateLinkedTokenSource(m_shutdown.Token, cancellationToken);
+            if (m_activeOperationCount == 0) m_operationsDrained = new UniTaskCompletionSource();
+            m_activeOperationCount++;
+            return operation;
+        }
+
+        private static void ReportAsyncException(Exception exception)
+        {
+            AlloyDebug.Error(exception);
+        }
+        private void EndOperation(CancellationTokenSource operation)
+        {
+            operation.Dispose();
+            m_activeOperationCount--;
+            if (m_activeOperationCount == 0) m_operationsDrained.TrySetResult();
+        }
+
+        private static void CancelLifetime(CancellationTokenSource lifetime)
+        {
+            try { lifetime?.Cancel(); }
+            catch (Exception exception) { AlloyDebug.Error(exception); }
+        }
+
 
         /// <summary>旧的全局画布查询；独立 Canvas 模式下返回 null。</summary>
         [Obsolete("独立 Canvas 模式没有全局画布，请从目标 UIView 获取 Canvas。")]
@@ -259,14 +331,25 @@ namespace AlloyFramework.UI
         /// <param name="data">调用方传入的原始业务数据。</param>
         /// <param name="cancellationToken">用于取消本次跳转的令牌。</param>
         /// <returns>目标界面的运行时句柄。</returns>
-        public UniTask<UIHandle> JumpAsync(
+        public async UniTask<UIHandle> JumpAsync(
             int jumpID,
             UIJumpPrepareHandler prepareHandler = null,
             object data = null,
             CancellationToken cancellationToken = default)
         {
-            EnsureReady();
-            return m_navigator.JumpAsync(jumpID, prepareHandler, data, cancellationToken);
+            var operation = BeginOperation(cancellationToken);
+            cancellationToken = operation.Token;
+            try
+            {
+                EnsureReady();
+                var handle = await m_navigator.JumpAsync(jumpID, prepareHandler, data, cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
+                return handle;
+            }
+            finally
+            {
+                EndOperation(operation);
+            }
         }
 
         /// <summary>
@@ -292,10 +375,21 @@ namespace AlloyFramework.UI
         /// </summary>
         /// <param name="cancellationToken">用于取消本次返回的令牌。</param>
         /// <returns>成功执行返回时为 true，没有可返回记录时为 false。</returns>
-        public UniTask<bool> BackAsync(CancellationToken cancellationToken = default)
+        public async UniTask<bool> BackAsync(CancellationToken cancellationToken = default)
         {
-            EnsureReady();
-            return m_navigator.BackAsync(cancellationToken);
+            var operation = BeginOperation(cancellationToken);
+            cancellationToken = operation.Token;
+            try
+            {
+                EnsureReady();
+                bool result = await m_navigator.BackAsync(cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
+                return result;
+            }
+            finally
+            {
+                EndOperation(operation);
+            }
         }
 
         /// <summary>
@@ -310,76 +404,94 @@ namespace AlloyFramework.UI
             UICallbacks.Run(BackAsync(cancellationToken), onCompleted);
         }
 
+        /// <summary>打开界面，并在加载、准备、动画及回滚结束后退出本次操作。</summary>
+        /// <param name="definition">界面定义。</param>
+        /// <param name="data">界面业务数据。</param>
+        /// <param name="cancellationToken">调用者取消令牌。</param>
+        /// <returns>打开成功的界面句柄。</returns>
+        /// <exception cref="ArgumentNullException">界面定义为空。</exception>
+        /// <exception cref="InvalidOperationException">管理器不可用或界面不允许重复打开。</exception>
         public async UniTask<UIHandle<TController>> OpenAsync<TView, TController, TData>(
             UIDefinition<TView, TController, TData> definition, TData data,
             CancellationToken cancellationToken = default)
             where TView : UIView
             where TController : UIController<TView, TData>, new()
         {
-            EnsureReady();
-            if (definition == null) throw new ArgumentNullException(nameof(definition));
-            cancellationToken.ThrowIfCancellationRequested();
-            Register(definition);
-
-            if (definition.OpenMode != UIOpenMode.Multiple)
+            var operation = BeginOperation(cancellationToken);
+            cancellationToken = operation.Token;
+            try
             {
-                var current = FindLatest(definition.UIName, false);
-                if (current != null)
+                EnsureReady();
+                if (definition == null) throw new ArgumentNullException(nameof(definition));
+                cancellationToken.ThrowIfCancellationRequested();
+                Register(definition);
+
+                if (definition.OpenMode != UIOpenMode.Multiple)
                 {
-                    if (current.State == UIState.Closing)
+                    var current = FindLatest(definition.UIName, false);
+                    if (current != null)
                     {
-                        await current.Closing.Task.AttachExternalCancellation(cancellationToken);
-                    }
-                    else
-                    {
-                        if (definition.OpenMode == UIOpenMode.SingleReject)
-                            throw new InvalidOperationException($"UI {definition.UIName} is already open.");
-                        if (current.Opening != null)
-                            await current.Opening.Task.AttachExternalCancellation(cancellationToken);
-                        cancellationToken.ThrowIfCancellationRequested();
-                        if (current.State == UIState.Active || current.State == UIState.Paused)
+                        if (current.State == UIState.Closing)
                         {
-                            if (definition.OpenMode == UIOpenMode.SingleRefresh)
-                                current.Controller.Refresh(data);
-                            BringToFront(current);
-                            return (UIHandle<TController>)current.Handle;
+                            await current.Closing.Task.AttachExternalCancellation(cancellationToken);
+                        }
+                        else
+                        {
+                            if (definition.OpenMode == UIOpenMode.SingleReject)
+                                throw new InvalidOperationException($"UI {definition.UIName} is already open.");
+                            if (current.Opening != null)
+                                await current.Opening.Task.AttachExternalCancellation(cancellationToken);
+                            cancellationToken.ThrowIfCancellationRequested();
+                            if (current.State == UIState.Active || current.State == UIState.Paused)
+                            {
+                                if (definition.OpenMode == UIOpenMode.SingleRefresh)
+                                    current.Controller.Refresh(data);
+                                BringToFront(current);
+                                cancellationToken.ThrowIfCancellationRequested();
+                                return (UIHandle<TController>)current.Handle;
+                            }
                         }
                     }
                 }
-            }
 
-            var cached = FindLatest(definition.UIName, true);
-            var entry = cached ?? new UIEntry { Definition = definition };
-            if (cached == null) m_entries.Add(entry);
-            entry.Data = data;
-            entry.Lifetime = CancellationTokenSource.CreateLinkedTokenSource(
-                m_shutdown.Token, cancellationToken);
-            entry.Opening = new UniTaskCompletionSource<UIHandle>();
-            SetState(entry, UIState.Loading);
-            try
-            {
-                var handle = await OpenEntryAsync<TController>(entry, data);
-                entry.Lifetime?.Dispose();
-                entry.Lifetime = null;
-                entry.Opening.TrySetResult(handle);
-                entry.Opening = null;
-                return handle;
-            }
-            catch (Exception exception)
-            {
-                entry.Opening?.TrySetException(exception);
-                entry.Opening = null;
-                if (entry.CloseRequested)
+                var cached = FindLatest(definition.UIName, true);
+                var entry = cached ?? new UIEntry { Definition = definition };
+                if (cached == null) m_entries.Add(entry);
+                entry.Data = data;
+                entry.Lifetime = CancellationTokenSource.CreateLinkedTokenSource(
+                    m_shutdown.Token, cancellationToken);
+                entry.Opening = new UniTaskCompletionSource<UIHandle>();
+                SetState(entry, UIState.Loading);
+                try
                 {
+                    var handle = await OpenEntryAsync<TController>(entry, data);
+                    cancellationToken.ThrowIfCancellationRequested();
                     entry.Lifetime?.Dispose();
                     entry.Lifetime = null;
+                    entry.Opening.TrySetResult(handle);
+                    entry.Opening = null;
+                    return handle;
                 }
-                else
+                catch (Exception exception)
                 {
-                    Release(entry);
-                }
+                    entry.Opening?.TrySetException(exception);
+                    entry.Opening = null;
+                    if (entry.CloseRequested)
+                    {
+                        entry.Lifetime?.Dispose();
+                        entry.Lifetime = null;
+                    }
+                    else
+                    {
+                        Release(entry);
+                    }
 
-                throw;
+                    throw;
+                }
+            }
+            finally
+            {
+                EndOperation(operation);
             }
         }
 
@@ -405,35 +517,72 @@ namespace AlloyFramework.UI
             where TController : UIController<TView, UIEmptyData>, new() =>
             UICallbacks.Run(OpenAsync(definition, cancellationToken), onCompleted);
 
+        /// <summary>关闭指定名称的界面。</summary>
+        /// <param name="uiName">界面名称。</param>
+        /// <returns>关闭及异常回滚完成的任务。</returns>
         public async UniTask CloseAsync(string uiName)
         {
-            EnsureReady();
-            if (string.IsNullOrWhiteSpace(uiName)) throw new ArgumentException("UI name is required.", nameof(uiName));
-            var snapshot = m_entries.ToArray();
-            foreach (var entry in snapshot)
-                if (entry.Definition.UIName == uiName && entry.State != UIState.Cached)
-                    await CloseEntryAsync(entry);
+            var operation = BeginOperation(CancellationToken.None);
+            try
+            {
+                EnsureReady();
+                if (string.IsNullOrWhiteSpace(uiName))
+                    throw new ArgumentException("UI name is required.", nameof(uiName));
+                var snapshot = m_entries.ToArray();
+                foreach (var entry in snapshot)
+                    if (entry.Definition.UIName == uiName && entry.State != UIState.Cached)
+                        await CloseEntryAsync(entry);
+            }
+            finally
+            {
+                EndOperation(operation);
+            }
         }
 
         public UniTask CloseAsync(UIDefinition definition) =>
             CloseAsync(definition?.UIName ?? throw new ArgumentNullException(nameof(definition)));
 
-        public UniTask CloseAsync(UIHandle handle)
+        /// <summary>关闭指定界面实例。</summary>
+        /// <param name="handle">界面句柄。</param>
+        /// <returns>关闭及异常回滚完成的任务。</returns>
+        public async UniTask CloseAsync(UIHandle handle)
         {
-            EnsureReady();
-            if (handle == null) throw new ArgumentNullException(nameof(handle));
-            foreach (var entry in m_entries)
-                if (ReferenceEquals(entry.Handle, handle)) return CloseEntryAsync(entry);
-            return UniTask.CompletedTask;
+            var operation = BeginOperation(CancellationToken.None);
+            try
+            {
+                EnsureReady();
+                if (handle == null) throw new ArgumentNullException(nameof(handle));
+                foreach (var entry in m_entries)
+                    if (ReferenceEquals(entry.Handle, handle))
+                    {
+                        await CloseEntryAsync(entry);
+                        return;
+                    }
+                return;
+            }
+            finally
+            {
+                EndOperation(operation);
+            }
         }
 
+        /// <summary>关闭全部未缓存的界面。</summary>
+        /// <returns>关闭及异常回滚完成的任务。</returns>
         public async UniTask CloseAllAsync()
         {
-            EnsureReady();
-            m_navigator.ClearRecords();
-            var snapshot = m_entries.ToArray();
-            foreach (var entry in snapshot)
-                if (entry.State != UIState.Cached) await CloseEntryAsync(entry);
+            var operation = BeginOperation(CancellationToken.None);
+            try
+            {
+                EnsureReady();
+                m_navigator.ClearRecords();
+                var snapshot = m_entries.ToArray();
+                foreach (var entry in snapshot)
+                    if (entry.State != UIState.Cached) await CloseEntryAsync(entry);
+            }
+            finally
+            {
+                EndOperation(operation);
+            }
         }
 
         public void Close(string uiName, Action<Exception> onCompleted = null) =>
@@ -734,7 +883,7 @@ namespace AlloyFramework.UI
             if (entry.Opening != null)
             {
                 entry.CloseRequested = true;
-                entry.Lifetime?.Cancel();
+                CancelLifetime(entry.Lifetime);
                 try { if (entry.Opening != null) await entry.Opening.Task; }
                 catch (Exception) { }
                 if (entry.State == UIState.Disposed || entry.State == UIState.Cached) return;
@@ -752,10 +901,11 @@ namespace AlloyFramework.UI
             var token = entry.Lifetime.Token;
             var completion = new UniTaskCompletionSource();
             entry.Closing = completion;
-            SetState(entry, UIState.Closing);
-            EventSystem.Instance.SendEvent(UIEventNames.Closing, entry.Definition.UIName);
             try
             {
+                // 业务事件也在回滚保护内，避免异常留下永不完成的关闭通知。
+                SetState(entry, UIState.Closing);
+                EventSystem.Instance.SendEvent(UIEventNames.Closing, entry.Definition.UIName);
                 var controller = entry.Controller;
                 var canvasGroup = entry.Instance?.Instance.GetComponent<CanvasGroup>();
                 if (canvasGroup != null)
@@ -889,34 +1039,47 @@ namespace AlloyFramework.UI
 
         private void Release(UIEntry entry)
         {
-            if (entry.State == UIState.Disposed) return;
-            m_blur?.Release(entry);
-            var uiName = entry.Definition.UIName;
-            var hadInstance = entry.Instance != null;
-            entry.Lifetime?.Cancel();
-            entry.Handle?.Invalidate();
-            entry.Handle = null;
-            if (entry.Created)
+            if (entry.State == UIState.Disposed || !m_releasingEntries.Add(entry)) return;
+            try
             {
-                try { entry.Controller.DisposeController(); }
+                // 单个回调或资源释放失败不能跳过同一界面的后续清理。
+                CancelLifetime(entry.Lifetime);
+                try { m_blur?.Release(entry); }
                 catch (Exception exception) { AlloyDebug.Error(exception); }
+                var hadInstance = entry.Instance != null;
+                entry.Handle?.Invalidate();
+                entry.Handle = null;
+                if (entry.Created)
+                {
+                    try { entry.Controller?.DisposeController(); }
+                    catch (Exception exception) { AlloyDebug.Error(exception); }
+                }
+                try { m_root?.UnregisterView(entry.View); }
+                catch (Exception exception) { AlloyDebug.Error(exception); }
+                try { entry.Instance?.Dispose(); }
+                catch (Exception exception) { AlloyDebug.Error(exception); }
+                entry.Instance = null;
+                entry.View = null;
+                entry.Controller = null;
+                SetState(entry, UIState.Disposed);
+                entry.Lifetime?.Dispose();
+                entry.Lifetime = null;
+                m_entries.Remove(entry);
+                if (hadInstance)
+                {
+                    try { EventSystem.Instance.SendEvent(UIEventNames.Destroyed, entry.Definition.UIName); }
+                    catch (Exception exception) { AlloyDebug.Error(exception); }
+                }
             }
-            m_root?.UnregisterView(entry.View);
-            entry.Instance?.Dispose();
-            entry.Instance = null;
-            entry.View = null;
-            entry.Controller = null;
-            SetState(entry, UIState.Disposed);
-            entry.Lifetime?.Dispose();
-            entry.Lifetime = null;
-            m_entries.Remove(entry);
-            if (hadInstance)
-                EventSystem.Instance.SendEvent(UIEventNames.Destroyed, uiName);
+            finally
+            {
+                m_releasingEntries.Remove(entry);
+            }
         }
 
         private void EnsureReady()
         {
-            if (!ReferenceEquals(Instance, this) || m_root == null || m_shutdown == null ||
+            if (m_isShuttingDown || !ReferenceEquals(Instance, this) || m_root == null || m_shutdown == null ||
                 m_shutdown.IsCancellationRequested)
                 throw new InvalidOperationException("UIManager is not initialized.");
         }

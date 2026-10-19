@@ -62,11 +62,14 @@ namespace AlloyFramework.UI
                 }
 
                 m_records.Remove(record);
+                cancellationToken.ThrowIfCancellationRequested();
                 await CloseIfValidAsync(record.TargetHandle);
+                cancellationToken.ThrowIfCancellationRequested();
 
                 if (record.BackMode == EUIBackMode.InheritSource)
                 {
                     await CloseIfValidAsync(record.SourceHandle);
+                    cancellationToken.ThrowIfCancellationRequested();
                     m_manager.Resume(record.ReturnHandle);
                     return true;
                 }
@@ -146,12 +149,14 @@ namespace AlloyFramework.UI
                 await prepareHandler(context, cancellationToken);
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
             var targetHandle = await m_manager.OpenDefinitionAsync(
                 targetDefinition,
                 context.TargetData,
                 jumpID,
                 cancellationToken);
 
+            cancellationToken.ThrowIfCancellationRequested();
             if (ReferenceEquals(sourceHandle, targetHandle))
             {
                 return targetHandle;

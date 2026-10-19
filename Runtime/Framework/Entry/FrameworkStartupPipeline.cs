@@ -62,6 +62,11 @@ namespace AlloyFramework
                     await step.ExecuteAsync(m_context, cancellationToken);
                     cancellationToken.ThrowIfCancellationRequested();
                 }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    // 正常退出只传播取消，让 Bootstrap 完成关闭，不记录步骤失败。
+                    throw;
+                }
                 catch
                 {
                     FrameworkStartupLog.Failure(step.Name, startedAt);

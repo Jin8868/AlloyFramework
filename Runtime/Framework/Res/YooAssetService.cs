@@ -17,6 +17,10 @@ namespace AlloyFramework
 
         public int TrackedAssetCount => _assets.Count;
 
+        /// <summary>固定发布信息并初始化默认资源包，失败时回收局部资源。</summary>
+        /// <param name="context">框架服务容器。</param>
+        /// <param name="cancellationToken">初始化取消令牌。</param>
+        /// <returns>默认资源包就绪的任务。</returns>
         public override async UniTask InitializeAsync(FrameworkContext context, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -26,6 +30,7 @@ namespace AlloyFramework
                 StartupLoading.ReportOperation(EStartupLoadingStage.CheckingRelease, "检查发布版本" );
                 await ResourceSettings.StartupPreparation(cancellationToken);
             }
+            cancellationToken.ThrowIfCancellationRequested();
             YooAssets.Initialize();
 
             try
@@ -154,6 +159,13 @@ namespace AlloyFramework
                 FrameworkStartupLog.Step($"资源包 {packageName} 就绪", packageStartedAt);
         }
 
+        /// <summary>加载共享资源，并为当前调用者建立独立引用。</summary>
+        /// <param name="location">资源地址。</param>
+        /// <param name="packageName">资源包名称。</param>
+        /// <param name="progressCallback">当前调用者的进度通知。</param>
+        /// <param name="cancellationToken">调用者与资源服务的联合取消令牌。</param>
+        /// <returns>共享资源的独立租约。</returns>
+        /// <exception cref="InvalidOperationException">资源加载失败或资源类型不匹配。</exception>
         public async UniTask<IAssetHandle<T>> LoadAssetAsync<T>(string location, string packageName,
             Action<float> progressCallback, CancellationToken cancellationToken) where T : UnityEngine.Object
         {
@@ -171,21 +183,26 @@ namespace AlloyFramework
             shared.References++;
             try
             {
-                await UniTask.WaitUntil(() =>
+                // 每个等待者只持有自己的引用，取消不能终止其他等待者的共享加载。
+                while (!shared.Handle.IsDone)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     progressCallback?.Invoke(shared.Handle.Progress);
-                    return shared.Handle.IsDone;
-                }, cancellationToken: cancellationToken);
+                    await UniTask.Yield(PlayerLoopTiming.Update, cancellationToken);
+                }
                 cancellationToken.ThrowIfCancellationRequested();
                 if (shared.Handle.Status != EOperationStatus.Succeed)
-                    throw new InvalidOperationException($"Failed to load {packageName}/{location}: {shared.Handle.LastError}");
+                    throw new InvalidOperationException(
+                        $"Failed to load {packageName}/{location}: {shared.Handle.LastError}");
 
                 var asset = shared.Handle.GetAssetObject<T>();
                 if (asset == null)
-                    throw new InvalidOperationException($"Asset has wrong type or is null: {packageName}/{location} ({typeof(T).Name})");
+                    throw new InvalidOperationException(
+                        $"Asset has wrong type or is null: {packageName}/{location} ({typeof(T).Name})");
 
                 progressCallback?.Invoke(1f);
-                return new AssetLease<T>(asset, () => Release(key, shared));
+                cancellationToken.ThrowIfCancellationRequested();
+                return new AssetLease<T>(this, key, shared, asset);
             }
             catch
             {
@@ -194,24 +211,43 @@ namespace AlloyFramework
             }
         }
 
+        /// <summary>加载预制体并创建实例，取消时回收未交付的实例和资源引用。</summary>
+        /// <param name="location">预制体地址。</param>
+        /// <param name="packageName">资源包名称。</param>
+        /// <param name="parent">实例父节点。</param>
+        /// <param name="progressCallback">当前请求的进度通知。</param>
+        /// <param name="cancellationToken">联合取消令牌。</param>
+        /// <returns>实例及其预制体引用的租约。</returns>
         public async UniTask<IInstanceHandle> InstantiateAsync(string location, string packageName, Transform parent,
             Action<float> progressCallback, CancellationToken cancellationToken)
         {
             var prefab = await LoadAssetAsync<GameObject>(
                 location, packageName, progressCallback, cancellationToken);
+            GameObject instance = null;
             try
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                var instance = UnityEngine.Object.Instantiate(prefab.Asset, parent);
+                instance = UnityEngine.Object.Instantiate(prefab.Asset, parent);
+                // Awake 等同步业务回调可能提出关闭，交付前再次检查取消。
+                cancellationToken.ThrowIfCancellationRequested();
                 return new InstanceLease(instance, prefab);
             }
             catch
             {
+                if (instance != null) UnityEngine.Object.Destroy(instance);
                 prefab.Dispose();
                 throw;
             }
         }
 
+        /// <summary>加载场景，取消后等待底层操作结束并卸载未交付的场景。</summary>
+        /// <param name="location">场景地址。</param>
+        /// <param name="packageName">资源包名称。</param>
+        /// <param name="mode">场景加载模式。</param>
+        /// <param name="progressCallback">当前请求的进度通知。</param>
+        /// <param name="cancellationToken">联合取消令牌。</param>
+        /// <returns>加载成功的场景租约。</returns>
+        /// <exception cref="InvalidOperationException">场景加载失败。</exception>
         public async UniTask<ISceneHandle> LoadSceneAsync(string location, string packageName, LoadSceneMode mode,
             Action<float> progressCallback, CancellationToken cancellationToken)
         {
@@ -220,28 +256,32 @@ namespace AlloyFramework
             var handle = GetPackage(packageName).LoadSceneAsync(location, mode);
             try
             {
-                await UniTask.WaitUntil(() =>
+                while (!handle.IsDone)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     progressCallback?.Invoke(handle.Progress);
-                    return handle.IsDone;
-                }, cancellationToken: cancellationToken);
+                    await UniTask.Yield(PlayerLoopTiming.Update, cancellationToken);
+                }
                 cancellationToken.ThrowIfCancellationRequested();
                 if (handle.Status != EOperationStatus.Succeed)
-                    throw new InvalidOperationException($"Failed to load scene {packageName}/{location}: {handle.LastError}");
+                    throw new InvalidOperationException(
+                        $"Failed to load scene {packageName}/{location}: {handle.LastError}");
                 progressCallback?.Invoke(1f);
+                cancellationToken.ThrowIfCancellationRequested();
                 return new SceneLease(handle);
             }
             catch
             {
                 if (handle.IsValid && !handle.IsDone)
-                    await UniTask.WaitUntil(() => handle.IsDone || !handle.IsValid);
+                    while (handle.IsValid && !handle.IsDone) await UniTask.Yield(PlayerLoopTiming.Update);
 
                 if (handle.IsValid)
                 {
-                    if (handle.Status == EOperationStatus.Succeed && handle.SceneObject.IsValid() && handle.SceneObject.isLoaded)
+                    if (handle.Status == EOperationStatus.Succeed &&
+                        handle.SceneObject.IsValid() && handle.SceneObject.isLoaded)
                     {
                         var unload = handle.UnloadAsync();
-                        await UniTask.WaitUntil(() => unload.IsDone);
+                        while (!unload.IsDone) await UniTask.Yield(PlayerLoopTiming.Update);
                     }
                     else
                     {
@@ -252,13 +292,20 @@ namespace AlloyFramework
             }
         }
 
+        /// <summary>等待不可撤销的闲置资源清理结束后，再报告取消或执行结果。</summary>
+        /// <param name="packageName">资源包名称。</param>
+        /// <param name="cancellationToken">联合取消令牌。</param>
+        /// <returns>底层清理退出的任务。</returns>
+        /// <exception cref="InvalidOperationException">底层资源清理失败。</exception>
         public async UniTask UnloadUnusedAsync(string packageName, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var operation = GetPackage(packageName).UnloadUnusedAssetsAsync();
-            await UniTask.WaitUntil(() => operation.IsDone, cancellationToken: cancellationToken);
+            while (!operation.IsDone) await UniTask.Yield(PlayerLoopTiming.Update);
+            cancellationToken.ThrowIfCancellationRequested();
             if (operation.Status != EOperationStatus.Succeed)
-                throw new InvalidOperationException($"Failed to unload unused assets from {packageName}: {operation.Error}");
+                throw new InvalidOperationException(
+                    $"Failed to unload unused assets from {packageName}: {operation.Error}");
         }
 
         public IHotUpdateProvider CreateHotUpdateProvider(string packageName)
@@ -268,11 +315,14 @@ namespace AlloyFramework
             return new YooAssetHotUpdateProvider(GetPackage(packageName));
         }
 
+        /// <summary>归还共享加载句柄并销毁底层资源系统；正常关闭由包装层先等待请求排空。</summary>
         public override void Shutdown()
         {
-            foreach (var shared in _assets.Values)
+            foreach (var shared in new List<SharedAsset>(_assets.Values))
             {
-                if (shared.Handle.IsValid) shared.Handle.Release();
+                // 单个句柄释放失败不能跳过其余句柄和全局资源销毁。
+                try { if (shared.Handle.IsValid) shared.Handle.Release(); }
+                catch (Exception exception) { AlloyDebug.Error(exception); }
             }
             _assets.Clear();
             _packages.Clear();
@@ -339,31 +389,54 @@ namespace AlloyFramework
 
         private sealed class AssetLease<T> : IAssetHandle<T> where T : UnityEngine.Object
         {
-            private readonly Action _release;
-            private T _asset;
-            public AssetLease(T asset, Action release) { _asset = asset; _release = release; }
-            public T Asset => !IsDisposed ? _asset : throw new ObjectDisposedException(nameof(AssetLease<T>));
-            public bool IsDisposed { get; private set; }
+            private readonly YooAssetService m_owner; // 归还当前租约引用的资源实现。
+            private readonly AssetKey m_key; // 共享资源索引。
+            private readonly SharedAsset m_shared; // 多个请求共享的实际加载。
+            private T m_asset; // 当前租约可访问的资源。
+            private bool m_disposed; // 当前租约是否已经归还。
+
+            internal AssetLease(YooAssetService owner, AssetKey key, SharedAsset shared, T asset)
+            {
+                m_owner = owner;
+                m_key = key;
+                m_shared = shared;
+                m_asset = asset;
+            }
+
+            public T Asset => !IsDisposed ? m_asset : throw new ObjectDisposedException(nameof(AssetLease<T>));
+            public bool IsDisposed => m_disposed || !m_shared.Handle.IsValid;
+
+            /// <summary>只归还当前租约的引用，重复归还不会影响其他持有者。</summary>
             public void Dispose()
             {
-                if (IsDisposed) return;
-                IsDisposed = true;
-                _asset = null;
-                _release();
+                if (m_disposed) return;
+                m_disposed = true;
+                m_asset = null;
+                m_owner.Release(m_key, m_shared);
             }
         }
 
         private sealed class InstanceLease : IInstanceHandle
         {
+            private bool m_disposed; // 当前实例是否已完成显式归还。
             private readonly IAssetHandle<GameObject> _prefab;
             private GameObject _instance;
-            public InstanceLease(GameObject instance, IAssetHandle<GameObject> prefab) { _instance = instance; _prefab = prefab; }
-            public GameObject Instance => !IsDisposed ? _instance : throw new ObjectDisposedException(nameof(InstanceLease));
-            public bool IsDisposed { get; private set; }
+            /// <summary>绑定实例与其预制体引用。</summary>
+            /// <param name="instance">场景实例。</param>
+            /// <param name="prefab">实例依赖的预制体租约。</param>
+            public InstanceLease(GameObject instance, IAssetHandle<GameObject> prefab)
+            {
+                _instance = instance;
+                _prefab = prefab;
+            }
+            public GameObject Instance => !IsDisposed
+                ? _instance : throw new ObjectDisposedException(nameof(InstanceLease));
+            public bool IsDisposed => m_disposed || _instance == null || _prefab.IsDisposed;
+            /// <summary>销毁实例并归还预制体引用，服务已关闭时也允许安全重复调用。</summary>
             public void Dispose()
             {
-                if (IsDisposed) return;
-                IsDisposed = true;
+                if (m_disposed) return;
+                m_disposed = true;
                 if (_instance != null) UnityEngine.Object.Destroy(_instance);
                 _instance = null;
                 _prefab.Dispose();
@@ -372,29 +445,32 @@ namespace AlloyFramework
 
         private sealed class SceneLease : ISceneHandle
         {
+            private bool m_unloaded; // 场景是否已显式卸载完成。
             private readonly YooAsset.SceneHandle _handle;
             public SceneLease(YooAsset.SceneHandle handle) { _handle = handle; }
             public Scene Scene => !IsUnloaded ? _handle.SceneObject : default;
-            public bool IsUnloaded { get; private set; }
+            public bool IsUnloaded => m_unloaded || !_handle.IsValid;
+            /// <summary>等待场景卸载完成，已经失效的底层句柄按已卸载处理。</summary>
+            /// <returns>场景卸载完成的任务。</returns>
             public async UniTask UnloadAsync()
             {
                 if (IsUnloaded) return;
                 if (!_handle.IsValid)
                 {
-                    IsUnloaded = true;
+                    m_unloaded = true;
                     return;
                 }
                 if (!_handle.SceneObject.IsValid() || !_handle.SceneObject.isLoaded)
                 {
                     _handle.Release();
-                    IsUnloaded = true;
+                    m_unloaded = true;
                     return;
                 }
                 var operation = _handle.UnloadAsync();
-                await UniTask.WaitUntil(() => operation.IsDone);
+                while (!operation.IsDone) await UniTask.Yield(PlayerLoopTiming.Update);
                 if (operation.Status != EOperationStatus.Succeed)
                     throw new InvalidOperationException($"Failed to unload scene: {operation.Error}");
-                IsUnloaded = true;
+                m_unloaded = true;
             }
         }
 
