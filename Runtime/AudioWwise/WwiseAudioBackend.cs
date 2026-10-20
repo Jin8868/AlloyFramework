@@ -100,6 +100,8 @@ namespace AlloyFramework.Audio.Wwise
                 finally { pin.Free(); }
 #if UNITY_ANDROID && !UNITY_EDITOR
                 // Android 的 SetBasePath 面向 APK assets，磁盘上的符号链接目录必须走 POSIX 搜索路径。
+                // APK 文件包使用 assets 相对地址，磁盘 Bank 和更新包继续优先走 POSIX 目录。
+                Check(AkUnitySoundEngine.SetBasePath(string.Empty), "设置 Android APK 文件包根目录");
                 Check(AkUnitySoundEngine.AddBasePath(m_initDirectory), "登记 Android 音频文件目录");
 #else
                 Check(AkUnitySoundEngine.SetBasePath(m_initDirectory), "设置初始化目录");
@@ -150,6 +152,8 @@ namespace AlloyFramework.Audio.Wwise
             }
             m_playbacks.Clear();
             m_groups.Clear();
+            // Term 已释放全部原生文件包，随后清除共享引用记录。
+            m_streamingPackages.Clear();
             foreach (WwiseReadFile file in m_fileUsers.Values) { file.Dispose(); }
             m_fileUsers.Clear();
             m_searchRoots.Clear();
@@ -332,6 +336,13 @@ namespace AlloyFramework.Audio.Wwise
                 // 按实际目录读取；哈希文件名只建立平台链接，共享文件保留到最后一个组卸载。
                 foreach (AudioContentFile file in content.Group.Files)
                 {
+                    if (content.IsFilePackage(file.Path))
+                    {
+                        RetainStreamingPackage(content, file, group);
+                        continue;
+                    }
+                    if (m_streamingPackages.ContainsKey(file.Path))
+                        throw new InvalidOperationException("同一媒体仍由文件包使用：" + file.Path);
                     string sourcePath = Path.GetFullPath(content.GetFilePath(file.Path));
                     if (!m_fileUsers.TryGetValue(file.Path, out WwiseReadFile readFile))
                     {
@@ -389,7 +400,7 @@ namespace AlloyFramework.Audio.Wwise
             }
         }
 
-        private static void UnloadNativeGroup(NativeGroup group)
+        private void UnloadNativeGroup(NativeGroup group)
         {
             if (group.Prepared)
             {
@@ -404,6 +415,7 @@ namespace AlloyFramework.Audio.Wwise
                 Check(AkUnitySoundEngine.UnloadBank(bank.ID, IntPtr.Zero, bank.Type), "卸载 Bank");
                 group.Banks.RemoveAt(index);
             }
+            ReleaseStreamingPackages(group);
         }
 
         private void ReleaseFiles(NativeGroup group)
@@ -546,6 +558,7 @@ namespace AlloyFramework.Audio.Wwise
             internal bool Prepared;
             internal readonly List<NativeBank> Banks = new List<NativeBank>();
             internal readonly List<string> Files = new List<string>();
+            internal readonly List<string> StreamingPackages = new List<string>(); // 本组持有的媒体文件包。
         }
 
         private sealed class NativeBank

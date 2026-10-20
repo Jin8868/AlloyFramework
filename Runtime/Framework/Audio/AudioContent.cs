@@ -58,6 +58,12 @@ namespace AlloyFramework.Audio
         public string Hash;
         /// <summary>可选的框架资源包地址，为空时使用制作目录中的相对路径。</summary>
         public string Location;
+        /// <summary>可选的视频长音轨文件包相对路径，普通音效保持为空。</summary>
+        public string FilePackagePath;
+        /// <summary>文件包的 SHA256 摘要，用于磁盘来源的额外完整性校验。</summary>
+        public string FilePackageHash;
+        /// <summary>文件包大小，仅用于缓存预算和诊断，不代表原生内存占用。</summary>
+        public long FilePackageSize;
     }
 
     [Serializable]
@@ -86,6 +92,9 @@ namespace AlloyFramework.Audio
 
     public sealed class AudioContentLease : IDisposable
     {
+        private readonly Dictionary<string, string> m_apkPackageAddresses =
+            new Dictionary<string, string>(); // APK 文件包不创建本地文件租约。
+        private readonly HashSet<string> m_filePackagePaths = new HashSet<string>(); // 区分媒体文件与原生文件包。
         private readonly Dictionary<string, RawFileLease> m_files =
             new Dictionary<string, RawFileLease>(); // 组内原始文件租约，原生卸载后才归还。
         private bool m_disposed; // 保证本租约只释放一次。
@@ -103,18 +112,35 @@ namespace AlloyFramework.Audio
             BackendVersion = backendVersion;
         }
 
-        /// <summary>返回组内文件的实际物理路径，不假定所有文件位于同一目录。</summary>
+        /// <summary>返回组内文件的物理路径，或供后端直接读取的 APK 文件包地址。</summary>
         /// <param name="relativePath">音频清单中的相对文件路径。</param>
-        /// <returns>保持有效的本地物理文件路径。</returns>
+        /// <returns>在内容租约有效期内可读取的物理路径或 APK 地址。</returns>
         /// <exception cref="ObjectDisposedException">内容租约已释放。</exception>
         /// <exception cref="KeyNotFoundException">直读交付未包含该文件。</exception>
         public string GetFilePath(string relativePath)
         {
             if (m_disposed) { throw new ObjectDisposedException(nameof(AudioContentLease)); }
             relativePath = relativePath.Replace('\\', '/');
+            if (m_apkPackageAddresses.TryGetValue(relativePath, out string address)) return address;
             if (m_files.TryGetValue(relativePath, out RawFileLease file)) { return file.FilePath; }
             if (!string.IsNullOrEmpty(DirectoryPath)) { return System.IO.Path.Combine(DirectoryPath, relativePath); }
             throw new KeyNotFoundException("音频内容未包含文件：" + relativePath);
+        }
+
+        /// <summary>查询该逻辑媒体是否通过 Wwise 文件包交付。</summary>
+        /// <param name="relativePath">音频清单中的原始媒体相对路径。</param>
+        /// <returns>该文件需要加载为原生文件包时为 true。</returns>
+        /// <exception cref="ObjectDisposedException">内容租约已释放。</exception>
+        public bool IsFilePackage(string relativePath)
+        {
+            if (m_disposed) throw new ObjectDisposedException(nameof(AudioContentLease));
+            return m_filePackagePaths.Contains(relativePath.Replace('\\', '/'));
+        }
+
+        internal void MarkFilePackage(string relativePath, string apkAddress)
+        {
+            m_filePackagePaths.Add(relativePath);
+            if (apkAddress != null) m_apkPackageAddresses.Add(relativePath, apkAddress);
         }
 
         internal void RetainFile(string relativePath, RawFileLease file)
@@ -135,13 +161,15 @@ namespace AlloyFramework.Audio
                 catch (Exception exception) { if (firstFailure == null) { firstFailure = exception; } }
             }
             m_files.Clear();
+            m_apkPackageAddresses.Clear();
+            m_filePackagePaths.Clear();
             if (!string.IsNullOrEmpty(DirectoryPath) && Directory.Exists(DirectoryPath))
             { Directory.Delete(DirectoryPath, true); }
             if (firstFailure != null) { throw new IOException("部分音频文件租约归还失败。", firstFailure); }
         }
     }
 
-    public sealed class ResourceAudioContentProvider : IAudioContentProvider
+    public sealed partial class ResourceAudioContentProvider : IAudioContentProvider
     {
         private readonly string m_sourceRoot; // 本地制作或安装包目录，也可使用资源包地址。
         private readonly string m_packageName; // 原始文件所属资源包。
@@ -181,6 +209,11 @@ namespace AlloyFramework.Audio
                 foreach (AudioContentFile file in group.Files)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
+                    if (!string.IsNullOrEmpty(file.FilePackagePath))
+                    {
+                        await PrepareFilePackageAsync(file, content, settings, cancellationToken);
+                        continue;
+                    }
                     string relativePath = ValidateRelativePath(file.Path);
                     string location = string.IsNullOrEmpty(file.Location)
                         ? (string.IsNullOrEmpty(m_sourceRoot) ? relativePath

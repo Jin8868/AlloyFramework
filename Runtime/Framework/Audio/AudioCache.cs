@@ -145,7 +145,8 @@ namespace AlloyFramework.Audio
             long bytes = 0;
             foreach (AudioContentFile file in content.Group.Files)
             {
-                long length = new FileInfo(content.GetFilePath(file.Path)).Length;
+                long length = content.IsFilePackage(file.Path)
+                    ? file.FilePackageSize : new FileInfo(content.GetFilePath(file.Path)).Length;
                 bytes = AddEstimatedBytes(bytes, length);
             }
             return bytes;

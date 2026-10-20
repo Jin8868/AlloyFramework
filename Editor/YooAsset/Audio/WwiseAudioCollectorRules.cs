@@ -64,7 +64,11 @@ namespace AlloyFramework.Editor
 
         private void AddFiles(AudioContentGroup group, string root)
         {
-            foreach (AudioContentFile file in group.Files) { m_paths.Add(root + file.Path.Replace('\\', '/')); }
+            foreach (AudioContentFile file in group.Files)
+            {
+                string contentPath = string.IsNullOrEmpty(file.FilePackagePath) ? file.Path : file.FilePackagePath;
+                m_paths.Add(root + contentPath.Replace('\\', '/'));
+            }
         }
 
         private static string GetPlatform()

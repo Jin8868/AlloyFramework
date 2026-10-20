@@ -88,7 +88,10 @@ namespace AlloyFramework.Audio.Wwise
         private static void SetPackageLocations(AudioContentGroup group, string sourceRoot)
         {
             foreach (AudioContentFile file in group.Files)
-            { file.Location = sourceRoot + "/" + Path.ChangeExtension(file.Path, null).Replace('\\', '/'); }
+            {
+                string contentPath = string.IsNullOrEmpty(file.FilePackagePath) ? file.Path : file.FilePackagePath;
+                file.Location = sourceRoot + "/" + Path.ChangeExtension(contentPath, null).Replace('\\', '/');
+            }
         }
     }
 }
