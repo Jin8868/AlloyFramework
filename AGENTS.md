@@ -2,19 +2,23 @@
 
 This repository follows the shared AlloyFramework and game business code standard. Keep the peer repository's AGENTS.md synchronized whenever these rules change.
 
+Use repository names or repository-relative paths in this file; do not include machine-specific absolute paths.
+
 
 # Alloy Unity Code Style
 
 Apply these rules to authored or modified C# in both repositories:
 
-- `D:/WorkSpeace/UnityProject/AlloyFramework`
-- `D:/WorkSpeace/UnityProject/game-template/UnityProj`
+- `AlloyFramework`
+- `game-template/UnityProj`
 
 Treat them as one shared standard. Do not maintain separate framework and business variants.
 
 When modifying an existing file, make the changed code comply. Do not expand a focused task into an unrelated repository-wide style rewrite. A direct user instruction for the current task takes precedence.
 
 ## AlloyFramework Editor Menus
+
+Do not add `AddComponentMenu` attributes to components unless the user explicitly requests them.
 
 Place every AlloyFramework-owned Unity editor tool under the visible root `★AlloyFramework★`.
 
