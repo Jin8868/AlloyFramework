@@ -14,16 +14,42 @@ namespace AlloyFramework.UI
     [RequireComponent(typeof(Image))]
     public sealed class UIAtlasImage : MonoBehaviour
     {
-        [SerializeField] private Image m_image; // 显示图集图片的目标组件，未指定时使用同节点 Image。
+        [SerializeField, HideInInspector] private Image m_image; // 显示图集图片的目标组件，未指定时使用同节点 Image。
+        [SerializeField, InspectorName("初始无图时隐藏")]
+        [Tooltip("开启后，初始无图及 Clear 后隐藏 Image，加载成功后恢复显示；换图期间保留旧图。")]
+        private bool m_hideInitiallyIfEmpty = true; // 是否隐藏尚未获得图片的 Image，避免显示白色矩形。
+        private bool m_imageHiddenByComponent; // 仅恢复本组件主动隐藏的 Image，保留原本禁用的状态。
         private IAssetHandle<SpriteAtlas> m_atlasHandle; // 当前显示图片持有的独立图集租约。
         private Sprite m_sprite; // GetSprite 创建的副本，由当前组件负责销毁。
         private CancellationTokenSource m_pendingRequest; // 最新设置请求的取消源。
         private bool m_destroyed; // 防止销毁后继续提交加载结果。
+#if UNITY_EDITOR
+        private string m_debugPackageName = string.Empty; // 编辑器中记录当前已加载图集的资源包。
+        private string m_debugAtlasLocation = string.Empty; // 编辑器中记录当前已加载图集的地址。
+        private string m_debugSpriteName = string.Empty; // 编辑器中记录当前已显示图片的名称。
+#endif
 
         /// <summary>
         /// 当前使用的目标 Image。
         /// </summary>
         public Image TargetImage => ResolveImage();
+
+#if UNITY_EDITOR
+        /// <summary>
+        /// 供编辑器 Inspector 只读查看当前已加载图集的资源包。
+        /// </summary>
+        public string DebugPackageName => m_debugPackageName;
+
+        /// <summary>
+        /// 供编辑器 Inspector 只读查看当前已加载图集的地址。
+        /// </summary>
+        public string DebugAtlasLocation => m_debugAtlasLocation;
+
+        /// <summary>
+        /// 供编辑器 Inspector 只读查看当前已显示图片的名称。
+        /// </summary>
+        public string DebugSpriteName => m_debugSpriteName;
+#endif
 
         /// <summary>
         /// 加载图集图片并设置到目标 Image，通过回调报告完成或异常。
@@ -74,6 +100,9 @@ namespace AlloyFramework.UI
                 throw new InvalidOperationException("图集图片组件没有可用的目标 Image。");
             }
 
+            // 即使业务早于 Awake 调用设置接口，也不能在等待加载时绘制无图的白色矩形。
+            HideImageIfEmpty();
+
             // 请求拥有自己的取消源与临时租约，旧请求退出时不能清除新请求的状态。
             var request = CancellationTokenSource.CreateLinkedTokenSource(
                 cancellationToken, this.GetCancellationTokenOnDestroy());
@@ -113,6 +142,13 @@ namespace AlloyFramework.UI
                 m_sprite = sprite;
                 atlasHandle = null;
                 sprite = null;
+#if UNITY_EDITOR
+                // 仅记录已成功交付的图片来源，构建产物不保留调试字段或记录逻辑。
+                m_debugPackageName = packageName;
+                m_debugAtlasLocation = atlasLocation;
+                m_debugSpriteName = spriteName;
+#endif
+                RestoreImageVisibility();
             }
             finally
             {
@@ -131,7 +167,7 @@ namespace AlloyFramework.UI
         }
 
         /// <summary>
-        /// 取消待完成的设置，清空当前图片并立即归还当前图集引用，可用于列表项复用。
+        /// 取消待完成的设置，清空当前图片并归还图集引用；开启无图隐藏时同时隐藏 Image。
         /// </summary>
         /// <exception cref="ObjectDisposedException">组件已销毁。</exception>
         public void Clear()
@@ -139,6 +175,13 @@ namespace AlloyFramework.UI
             ThrowIfDestroyed();
             CancelPendingRequest();
             ReleaseCurrent();
+            HideImageIfEmpty();
+        }
+
+        private void Awake()
+        {
+            // 首次渲染前应用无图隐藏，避免等到业务发起加载后才隐藏而闪白。
+            HideImageIfEmpty();
         }
 
         private void Reset()
@@ -152,6 +195,35 @@ namespace AlloyFramework.UI
             m_destroyed = true;
             CancelPendingRequest();
             ReleaseCurrent();
+            RestoreImageVisibility();
+        }
+
+        private void HideImageIfEmpty()
+        {
+            var image = ResolveImage();
+            if (!m_hideInitiallyIfEmpty || image == null || image.overrideSprite != null || !image.enabled)
+            {
+                return;
+            }
+
+            // 只登记由本组件禁用的 Image；Prefab 原本禁用的 Image 不会被加载结果自动开启。
+            m_imageHiddenByComponent = true;
+            image.enabled = false;
+        }
+
+        private void RestoreImageVisibility()
+        {
+            if (!m_imageHiddenByComponent)
+            {
+                return;
+            }
+
+            // 图片先赋值再恢复显示；移除本组件时也归还对 Image 显隐状态的控制。
+            m_imageHiddenByComponent = false;
+            if (m_image != null)
+            {
+                m_image.enabled = true;
+            }
         }
 
         private Image ResolveImage()
@@ -183,12 +255,20 @@ namespace AlloyFramework.UI
             }
         }
 
+
         private void ReleaseCurrent()
         {
             var sprite = m_sprite;
             var atlasHandle = m_atlasHandle;
             m_sprite = null;
             m_atlasHandle = null;
+
+#if UNITY_EDITOR
+            // 归还当前图片时同步清空编辑器中的来源记录。
+            m_debugPackageName = string.Empty;
+            m_debugAtlasLocation = string.Empty;
+            m_debugSpriteName = string.Empty;
+#endif
 
             // 只清除本组件设置的图片，避免覆盖外部后来赋予 Image 的其他图片。
             if (m_image != null && sprite != null && m_image.sprite == sprite)
