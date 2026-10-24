@@ -29,7 +29,8 @@ namespace AlloyFramework.Editor
         [SerializeField] internal int CellAdvance = 64;
         [SerializeField] internal int SpaceAdvance = 24;
         [SerializeField] internal int Padding = 2;
-        [SerializeField] internal int MaxAtlasSize = 2048;
+        // 保留旧版配置字段；自动图集搜索不再读取此值。
+        [SerializeField, HideInInspector] internal int MaxAtlasSize = 2048;
         [SerializeField] internal FilterMode Filter = FilterMode.Bilinear;
         [SerializeField] internal bool Recursive;
         [SerializeField] internal string PreviewText = "0123456789";

@@ -43,6 +43,7 @@ namespace AlloyFramework.Editor
     internal static class ArtFontBuilder
     {
         internal const string TMPSHADERNAME = "TextMeshPro/Bitmap Custom Atlas";
+        private const int MAXATLASSIZE = 4096; // 单页图集的自动搜索上限。
 
         internal static string ResolvePath(string path)
         {
@@ -224,16 +225,7 @@ namespace AlloyFramework.Editor
                 }
 
                 build.Glyphs.Sort(CompareGlyphs);
-                int size = 64;
-                while (!TryPack(build.Glyphs, size, profile.Padding))
-                {
-                    size *= 2;
-                    if (size > profile.MaxAtlasSize)
-                    {
-                        throw new InvalidOperationException("图集容量不足。请提高最大尺寸或拆分字体，不会缩小源图片。");
-                    }
-                }
-
+                Vector2Int size = FindAtlasSize(build.Glyphs, profile.Padding);
                 build.Atlas = CreateAtlas(build.Glyphs, size, profile.Padding, profile.Filter);
                 return build;
             }
@@ -265,9 +257,7 @@ namespace AlloyFramework.Editor
 
             if ((!profile.AutomaticMetrics && (profile.PointSize < 1 || profile.PointSize > 512
                     || profile.LineHeight < 1 || profile.Ascent <= profile.Descent)) || profile.SpaceAdvance < 1
-                || profile.Padding < 1 || profile.Padding > 16 || profile.CellAdvance < 1
-                || profile.MaxAtlasSize < 64 || profile.MaxAtlasSize > 4096
-                || !Mathf.IsPowerOfTwo(profile.MaxAtlasSize))
+                || profile.Padding < 1 || profile.Padding > 16 || profile.CellAdvance < 1)
             {
                 throw new InvalidOperationException("字号、行高、基线范围、空格宽度或图集参数无效。");
             }
@@ -292,8 +282,8 @@ namespace AlloyFramework.Editor
                     throw new InvalidOperationException($"不能读取图片：{character.SourceFile}");
                 }
 
-                if (texture.width + profile.Padding * 2 > profile.MaxAtlasSize
-                    || texture.height + profile.Padding * 2 > profile.MaxAtlasSize)
+                if (texture.width + profile.Padding * 2 > GetAtlasLimit()
+                    || texture.height + profile.Padding * 2 > GetAtlasLimit())
                 {
                     throw new InvalidOperationException($"图片超过图集最大尺寸：{character.SourceFile}");
                 }
@@ -326,47 +316,176 @@ namespace AlloyFramework.Editor
 
         private static int CompareGlyphs(ArtFontGlyph left, ArtFontGlyph right)
         {
+            int areaOrder = (right.Width * right.Height).CompareTo(left.Width * left.Height);
+            return areaOrder != 0 ? areaOrder : CompareGlyphHeights(left, right);
+        }
+
+        private static int CompareGlyphHeights(ArtFontGlyph left, ArtFontGlyph right)
+        {
             int heightOrder = right.Height.CompareTo(left.Height);
             return heightOrder != 0 ? heightOrder : left.Unicode.CompareTo(right.Unicode);
         }
 
-        private static bool TryPack(List<ArtFontGlyph> glyphs, int size, int padding)
+        private static int GetAtlasLimit()
         {
-            int cursorX = 0;
-            int cursorY = 0;
-            int rowHeight = 0;
+            return SystemInfo.maxTextureSize > 0 ? Mathf.Min(MAXATLASSIZE, SystemInfo.maxTextureSize) : MAXATLASSIZE;
+        }
+
+        private static Vector2Int FindAtlasSize(List<ArtFontGlyph> glyphs, int padding)
+        {
+            // 搜索二次幂长宽组合；先比较面积，同面积优先更均衡的比例。
+            int minimumWidth = 1;
+            int minimumHeight = 1;
+            long requiredArea = 0;
             foreach (ArtFontGlyph glyph in glyphs)
             {
                 int width = glyph.Width + padding * 2;
                 int height = glyph.Height + padding * 2;
-                if (width > size || height > size)
+                minimumWidth = Mathf.Max(minimumWidth, width);
+                minimumHeight = Mathf.Max(minimumHeight, height);
+                requiredArea += (long)width * height;
+            }
+
+            var candidates = new List<Vector2Int>();
+            int limit = GetAtlasLimit();
+            for (int width = 32; width <= limit; width *= 2)
+            {
+                for (int height = 32; height <= limit; height *= 2)
+                {
+                    if (width >= minimumWidth && height >= minimumHeight && (long)width * height >= requiredArea)
+                    {
+                        candidates.Add(new Vector2Int(width, height));
+                    }
+                }
+            }
+
+            candidates.Sort(CompareAtlasSizes);
+            foreach (Vector2Int size in candidates)
+            {
+                // 两种稳定字形顺序降低混合尺寸图片的打包空隙。
+                glyphs.Sort(CompareGlyphs);
+                if (TryPack(glyphs, size, padding))
+                {
+                    return size;
+                }
+
+                glyphs.Sort(CompareGlyphHeights);
+                if (TryPack(glyphs, size, padding))
+                {
+                    return size;
+                }
+            }
+
+            throw new InvalidOperationException($"艺术字超过 {limit}×{limit} 单页容量，请拆分为多套字体。");
+        }
+
+        private static int CompareAtlasSizes(Vector2Int left, Vector2Int right)
+        {
+            int areaOrder = (left.x * left.y).CompareTo(right.x * right.y);
+            if (areaOrder != 0)
+            {
+                return areaOrder;
+            }
+
+            int edgeOrder = Mathf.Max(left.x, left.y).CompareTo(Mathf.Max(right.x, right.y));
+            return edgeOrder != 0 ? edgeOrder : right.x.CompareTo(left.x);
+        }
+
+        private static bool TryPack(List<ArtFontGlyph> glyphs, Vector2Int size, int padding)
+        {
+            var freeRects = new List<RectInt> { new RectInt(0, 0, size.x, size.y) };
+            foreach (ArtFontGlyph glyph in glyphs)
+            {
+                int width = glyph.Width + padding * 2;
+                int height = glyph.Height + padding * 2;
+                int bestIndex = -1;
+                int bestShortSide = int.MaxValue;
+                int bestLongSide = int.MaxValue;
+                for (int index = 0; index < freeRects.Count; index++)
+                {
+                    RectInt free = freeRects[index];
+                    if (width > free.width || height > free.height)
+                    {
+                        continue;
+                    }
+
+                    int shortSide = Mathf.Min(free.width - width, free.height - height);
+                    int longSide = Mathf.Max(free.width - width, free.height - height);
+                    if (shortSide < bestShortSide || shortSide == bestShortSide && longSide < bestLongSide)
+                    {
+                        bestIndex = index;
+                        bestShortSide = shortSide;
+                        bestLongSide = longSide;
+                    }
+                }
+
+                if (bestIndex < 0)
                 {
                     return false;
                 }
 
-                if (cursorX + width > size)
-                {
-                    cursorX = 0;
-                    cursorY += rowHeight;
-                    rowHeight = 0;
-                }
-
-                if (cursorY + height > size)
-                {
-                    return false;
-                }
-
-                glyph.Rect = new RectInt(cursorX + padding, cursorY + padding, glyph.Width, glyph.Height);
-                cursorX += width;
-                rowHeight = Mathf.Max(rowHeight, height);
+                RectInt selected = freeRects[bestIndex];
+                var used = new RectInt(selected.x, selected.y, width, height);
+                glyph.Rect = new RectInt(used.x + padding, used.y + padding, glyph.Width, glyph.Height);
+                SplitFreeRects(freeRects, used);
             }
 
             return true;
         }
 
-        private static Texture2D CreateAtlas(List<ArtFontGlyph> glyphs, int size, int padding, FilterMode filter)
+        private static void SplitFreeRects(List<RectInt> freeRects, RectInt used)
         {
-            var pixels = new Color32[size * size];
+            // 一个占用区可能穿过多个候选空区；全部切开，防止字形互相覆盖。
+            for (int index = freeRects.Count - 1; index >= 0; index--)
+            {
+                RectInt free = freeRects[index];
+                if (!free.Overlaps(used))
+                {
+                    continue;
+                }
+
+                freeRects.RemoveAt(index);
+                if (used.xMin > free.xMin)
+                {
+                    freeRects.Add(new RectInt(free.x, free.y, used.xMin - free.xMin, free.height));
+                }
+
+                if (used.xMax < free.xMax)
+                {
+                    freeRects.Add(new RectInt(used.xMax, free.y, free.xMax - used.xMax, free.height));
+                }
+
+                if (used.yMin > free.yMin)
+                {
+                    freeRects.Add(new RectInt(free.x, free.y, free.width, used.yMin - free.yMin));
+                }
+
+                if (used.yMax < free.yMax)
+                {
+                    freeRects.Add(new RectInt(free.x, used.yMax, free.width, free.yMax - used.yMax));
+                }
+            }
+
+            // 去除被更大空区包含的冗余候选，控制搜索规模。
+            for (int index = freeRects.Count - 1; index >= 0; index--)
+            {
+                RectInt candidate = freeRects[index];
+                for (int otherIndex = 0; otherIndex < freeRects.Count; otherIndex++)
+                {
+                    RectInt other = freeRects[otherIndex];
+                    if (index != otherIndex && candidate.xMin >= other.xMin && candidate.yMin >= other.yMin
+                        && candidate.xMax <= other.xMax && candidate.yMax <= other.yMax)
+                    {
+                        freeRects.RemoveAt(index);
+                        break;
+                    }
+                }
+            }
+        }
+
+        private static Texture2D CreateAtlas(List<ArtFontGlyph> glyphs, Vector2Int size, int padding, FilterMode filter)
+        {
+            var pixels = new Color32[size.x * size.y];
             foreach (ArtFontGlyph glyph in glyphs)
             {
                 // 透明护边保留邻近 RGB；TMP 的额外采样区不会复制出一圈不透明像素。
@@ -376,7 +495,7 @@ namespace AlloyFramework.Editor
                     for (int offsetX = -padding; offsetX < glyph.Width + padding; offsetX++)
                     {
                         int sourceX = Mathf.Clamp(offsetX, 0, glyph.Width - 1);
-                        int target = (glyph.Rect.y + offsetY) * size + glyph.Rect.x + offsetX;
+                        int target = (glyph.Rect.y + offsetY) * size.x + glyph.Rect.x + offsetX;
                         Color32 color = glyph.Pixels[sourceY * glyph.Width + sourceX];
                         if (offsetX < 0 || offsetX >= glyph.Width || offsetY < 0 || offsetY >= glyph.Height)
                         {
@@ -388,7 +507,7 @@ namespace AlloyFramework.Editor
                 }
             }
 
-            var atlas = new Texture2D(size, size, TextureFormat.RGBA32, false)
+            var atlas = new Texture2D(size.x, size.y, TextureFormat.RGBA32, false)
             {
                 name = "艺术字临时图集",
                 hideFlags = HideFlags.HideAndDontSave,
@@ -435,7 +554,7 @@ namespace AlloyFramework.Editor
             importer.npotScale = TextureImporterNPOTScale.None;
             importer.wrapMode = TextureWrapMode.Clamp;
             importer.filterMode = settings.Filter;
-            importer.maxTextureSize = settings.MaxAtlasSize;
+            importer.maxTextureSize = Mathf.Max(build.Atlas.width, build.Atlas.height);
             importer.sRGBTexture = true;
             importer.SaveAndReimport();
             Texture2D atlas = AssetDatabase.LoadAssetAtPath<Texture2D>(atlasPath);
@@ -540,7 +659,8 @@ namespace AlloyFramework.Editor
             var characters = new List<CharacterInfo>();
             foreach (ArtFontGlyph glyph in build.Glyphs)
             {
-                float size = build.Atlas.width;
+                float atlasWidth = build.Atlas.width;
+                float atlasHeight = build.Atlas.height;
                 characters.Add(new CharacterInfo
                 {
                     index = (int)glyph.Unicode,
@@ -550,10 +670,10 @@ namespace AlloyFramework.Editor
                     minY = glyph.BearingY - glyph.Height,
                     maxY = glyph.BearingY,
                     advance = glyph.Advance,
-                    uvBottomLeft = new Vector2(glyph.Rect.xMin / size, glyph.Rect.yMin / size),
-                    uvBottomRight = new Vector2(glyph.Rect.xMax / size, glyph.Rect.yMin / size),
-                    uvTopLeft = new Vector2(glyph.Rect.xMin / size, glyph.Rect.yMax / size),
-                    uvTopRight = new Vector2(glyph.Rect.xMax / size, glyph.Rect.yMax / size)
+                    uvBottomLeft = new Vector2(glyph.Rect.xMin / atlasWidth, glyph.Rect.yMin / atlasHeight),
+                    uvBottomRight = new Vector2(glyph.Rect.xMax / atlasWidth, glyph.Rect.yMin / atlasHeight),
+                    uvTopLeft = new Vector2(glyph.Rect.xMin / atlasWidth, glyph.Rect.yMax / atlasHeight),
+                    uvTopRight = new Vector2(glyph.Rect.xMax / atlasWidth, glyph.Rect.yMax / atlasHeight)
                 });
             }
 
