@@ -237,7 +237,6 @@ namespace AlloyFramework
                 await UniTask.Yield(PlayerLoopTiming.Update, cancellationToken);
             }
             cancellationToken.ThrowIfCancellationRequested();
-            FrameworkBootstrap.DestroyStartupScreen();
         }
 
         internal static void ConfigureSteps(int stepCount)

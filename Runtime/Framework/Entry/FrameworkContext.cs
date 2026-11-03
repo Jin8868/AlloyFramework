@@ -8,6 +8,8 @@ namespace AlloyFramework
         private readonly Dictionary<Type, object> _services =
             new Dictionary<Type, object>();
 
+        internal FrameworkStartupController StartupController { get; set; }
+
         public TService GetRequired<TService>() where TService : class
         {
             if (_services.TryGetValue(typeof(TService), out var service))
@@ -52,6 +54,7 @@ namespace AlloyFramework
         internal void Clear()
         {
             _services.Clear();
+            StartupController = null;
         }
 
         private void RegisterService(Type serviceType, object service)

@@ -14,6 +14,7 @@ namespace AlloyFramework
         private readonly Dictionary<AssetKey, SharedAsset> _assets = new Dictionary<AssetKey, SharedAsset>();
         private readonly SemaphoreSlim _packageGate = new SemaphoreSlim(1, 1);
         private bool _initialized;
+        private FrameworkStartupController m_startupController; // 从本轮服务上下文获取的启动状态。
 
         public int TrackedAssetCount => _assets.Count;
 
@@ -23,6 +24,7 @@ namespace AlloyFramework
         /// <returns>默认资源包就绪的任务。</returns>
         public override async UniTask InitializeAsync(FrameworkContext context, CancellationToken cancellationToken)
         {
+            m_startupController = context.StartupController;
             cancellationToken.ThrowIfCancellationRequested();
             // 在任何包初始化前固定发布信息，保证代码、资源和音频属于同一次发布。
             if (ResourceSettings.StartupPreparation != null)
@@ -66,7 +68,7 @@ namespace AlloyFramework
             // 准备状态不依赖业务 UI，错误始终能定位到实际资源包。
             StartupLoading.ReportPackage(EStartupLoadingStage.PreparingPackages,
                 "初始化资源包 " + packageName, packageName);
-            var logStartup = FrameworkBootstrap.IsStarting;
+            var logStartup = m_startupController != null && m_startupController.IsStarting;
             var packageStartedAt = FrameworkStartupLog.Now;
             var package = YooAssets.TryGetPackage(packageName) ?? YooAssets.CreatePackage(packageName);
             InitializeParameters parameters;
@@ -327,6 +329,7 @@ namespace AlloyFramework
             _assets.Clear();
             _packages.Clear();
             _initialized = false;
+            m_startupController = null;
             if (YooAssets.Initialized) YooAssets.Destroy();
         }
 

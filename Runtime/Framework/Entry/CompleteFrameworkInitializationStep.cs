@@ -22,7 +22,7 @@ namespace AlloyFramework
             StartupLoading.BeginFrameworkStep(EStartupLoadingStage.InitializingSystems, Name);
             // 回调读取到的框架状态必须已经就绪。
             context.IsInitialized = true;
-            FrameworkBootstrap.HandleInitialized();
+            context.Services.StartupController.HandleInitialized();
             cancellationToken.ThrowIfCancellationRequested();
             StartupLoading.CompleteFrameworkStep();
             return UniTask.CompletedTask;

@@ -17,6 +17,7 @@ namespace AlloyFramework
         internal IGameStartup GameStartup { get; set; }
         internal IGameEntry GameEntry { get; set; }
         internal IStartupLoadingSession LoadingSession { get; set; }
+        internal IGameStartupConfigurationProvider ConfigurationProvider { get; set; }
         internal GameStartupConfiguration Configuration { get; set; }
         internal bool IsInitialized { get; set; }
         internal bool IsGameStartupStarted { get; set; }

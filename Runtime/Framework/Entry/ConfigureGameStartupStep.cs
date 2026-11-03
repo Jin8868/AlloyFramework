@@ -1,15 +1,12 @@
 using System;
 using System.Threading;
 using Cysharp.Threading.Tasks;
-using UnityEngine;
 
 namespace AlloyFramework
 {
     /// <summary>显式读取主包配置，在资源系统启动前确定资源模式和启动实现。</summary>
     internal sealed class ConfigureGameStartupStep : IFrameworkStartupStep
     {
-        private const string CONFIGURATIONLOCATION = "GameHotUpdateSettings"; // 约定的主包 Resources 启动配置地址。
-
         /// <summary>当前启动步骤的日志名称。</summary>
         public string Name => "读取主包启动配置";
 
@@ -25,10 +22,10 @@ namespace AlloyFramework
         {
             cancellationToken.ThrowIfCancellationRequested();
             StartupLoading.BeginFrameworkStep(EStartupLoadingStage.InitializingSystems, Name);
-            var asset = Resources.Load<ScriptableObject>(CONFIGURATIONLOCATION);
-            if (!(asset is IGameStartupConfigurationProvider provider))
+            var provider = context.ConfigurationProvider;
+            if (provider == null)
             {
-                throw new InvalidOperationException("主包启动配置缺失或未实现 IGameStartupConfigurationProvider。");
+                throw new InvalidOperationException("场景入口未提供主包启动配置。");
             }
 
             // 资源模式必须先确定，后续 Resource 初始化才能使用正确的本地或远端资源。
