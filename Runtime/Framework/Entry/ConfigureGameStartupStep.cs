@@ -7,12 +7,6 @@ namespace AlloyFramework
     /// <summary>显式读取主包配置，在资源系统启动前确定资源模式和启动实现。</summary>
     internal sealed class ConfigureGameStartupStep : IFrameworkStartupStep
     {
-        /// <summary>当前启动步骤的日志名称。</summary>
-        public string Name => "读取主包启动配置";
-
-        /// <summary>启动配置占用一个框架 Loading 步骤。</summary>
-        public int StepCount => 1;
-
         /// <summary>读取配置契约，不提前创建代码准备服务和入口加载器。</summary>
         /// <param name="context">保存后续步骤共享的配置和准备结果。</param>
         /// <param name="cancellationToken">用于取消启动的令牌。</param>
@@ -21,7 +15,7 @@ namespace AlloyFramework
         public UniTask ExecuteAsync(FrameworkStartupContext context, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            StartupLoading.BeginFrameworkStep(EStartupLoadingStage.InitializingSystems, Name);
+            StartupLoading.BeginFrameworkStep(EStartupLoadingStage.InitializingSystems, "读取主包启动配置");
             var provider = context.ConfigurationProvider;
             if (provider == null)
             {
@@ -37,6 +31,15 @@ namespace AlloyFramework
 
             cancellationToken.ThrowIfCancellationRequested();
             StartupLoading.CompleteFrameworkStep();
+            return UniTask.CompletedTask;
+        }
+
+        /// <summary>释放本步骤持有的状态和资源，可处理执行中途失败的情况。</summary>
+        /// <param name="context">本轮启动上下文。</param>
+        /// <returns>本步骤退出清理完成的任务。</returns>
+        public UniTask ShutdownAsync(FrameworkStartupContext context)
+        {
+            context.Configuration = null;
             return UniTask.CompletedTask;
         }
     }

@@ -121,8 +121,6 @@ namespace AlloyFramework
     /// <summary>集中管理启动快照、步骤权重、控制权与唯一错误。</summary>
     public static class StartupLoading
     {
-        private const float FRAMEWORKMINIMUM = 0.01f; // 框架阶段显示从百分之一开始。
-        private const float FRAMEWORKMAXIMUM = 0.99f; // 入口准备成功前不能显示百分之百。
         private const float READINESSTIMEOUT = 15f; // 展示缺失时给出诊断，避免无限等待。
         private const float PACKAGEPREPARATIONWEIGHT = 0.3f; // 包初始化、版本与清单占当前步骤的固定份额。
         private const float PACKAGEDOWNLOADWEIGHT = 0.4f; // 各包下载使用固定份额，不因发现新包而倒退。
@@ -130,8 +128,8 @@ namespace AlloyFramework
         private static StartupLoadingSnapshot m_snapshot; // 注册时立即重放的最新状态。
         private static StartupLoadingError m_error; // 本轮去重后的唯一错误。
         private static int m_round; // 单调增长，隔离旧异步回调。
-        private static int m_stepCount; // 当前控制方的固定步骤总数。
-        private static int m_completedSteps; // 已真实完成的步骤数。
+        private static int m_stepCount; // 业务初始化声明的步骤总数，不用于框架阶段。
+        private static int m_completedSteps; // 已完成的业务步骤数。
         private static bool m_stepActive; // 当前是否有尚未完成的步骤。
         private static bool m_businessReady; // 框架已明确交出控制权。
         private static string m_stepName; // 当前逻辑步骤名称。
@@ -221,11 +219,11 @@ namespace AlloyFramework
             m_error = null;
             m_businessReady = false;
             m_stepActive = false;
-            m_stepCount = 1;
+            m_stepCount = 0;
             m_completedSteps = 0;
             m_cancellationToken = cancellationToken;
             Publish(EStartupLoadingOwner.Framework, EStartupLoadingStage.WaitingForLoading,
-                "准备启动", 0f, FRAMEWORKMINIMUM);
+                "准备启动", 0f, 0f);
 
             // 异步让出主线程，使 Boot 的 Awake 和绘制能够完成。
             float startedAt = Time.realtimeSinceStartup;
@@ -237,11 +235,6 @@ namespace AlloyFramework
                 await UniTask.Yield(PlayerLoopTiming.Update, cancellationToken);
             }
             cancellationToken.ThrowIfCancellationRequested();
-        }
-
-        internal static void ConfigureSteps(int stepCount)
-        {
-            m_stepCount = Math.Max(1, stepCount);
         }
 
         internal static void BeginFrameworkStep(EStartupLoadingStage stage, string message)
@@ -300,7 +293,8 @@ namespace AlloyFramework
 
         private static void BeginStep(EStartupLoadingStage stage, string message)
         {
-            if (m_stepActive || m_completedSteps >= m_stepCount)
+            if (m_stepActive ||
+                (m_snapshot.Owner == EStartupLoadingOwner.Business && m_completedSteps >= m_stepCount))
                 throw new InvalidOperationException("启动步骤未完成或超出配置的步骤总数。");
             m_stepName = message;
             m_stepStartedAt = Time.realtimeSinceStartupAsDouble;
@@ -315,7 +309,7 @@ namespace AlloyFramework
             AlloyDebug.Log($"[StartupLoading] 完成：{m_stepName}，耗时 " +
                 $"{(Time.realtimeSinceStartupAsDouble - m_stepStartedAt) * 1000d:F1} ms");
             ReportOperation(m_snapshot.Stage, m_stepName, 1f);
-            m_completedSteps++;
+            if (m_snapshot.Owner == EStartupLoadingOwner.Business) m_completedSteps++;
             m_stepActive = false;
         }
 
@@ -327,9 +321,9 @@ namespace AlloyFramework
 
         private static float CalculateProgress(float fraction)
         {
+            // 框架只显示当前操作的真实进度，进入下一操作时允许从零开始。
+            if (m_snapshot.Owner == EStartupLoadingOwner.Framework) return fraction;
             float progress = (m_completedSteps + fraction) / m_stepCount;
-            if (m_snapshot.Owner == EStartupLoadingOwner.Framework)
-                progress = Mathf.Lerp(FRAMEWORKMINIMUM, FRAMEWORKMAXIMUM, progress);
             return Mathf.Max(m_snapshot.OverallProgress, progress);
         }
 

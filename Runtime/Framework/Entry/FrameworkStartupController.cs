@@ -198,7 +198,6 @@ namespace AlloyFramework
                 cancellationToken.ThrowIfCancellationRequested();
                 DestroyStartupScreen();
                 m_startupPipeline = new FrameworkStartupPipeline(m_startupContext);
-                StartupLoading.ConfigureSteps(m_startupPipeline.StepCount);
                 await m_startupPipeline.RunAsync(cancellationToken);
                 cancellationToken.ThrowIfCancellationRequested();
                 FrameworkStartupLog.Step("完整启动（含业务入口）", startedAt);

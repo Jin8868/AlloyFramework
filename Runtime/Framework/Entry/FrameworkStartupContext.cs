@@ -6,7 +6,7 @@ namespace AlloyFramework
     internal sealed class FrameworkStartupContext
     {
         private readonly FrameworkContext m_services = new FrameworkContext(); // 本轮步骤共享的框架服务容器。
-        private readonly List<FrameworkSystem> m_initializedSystems = new List<FrameworkSystem>(); // 已取得清理责任的系统。
+        private readonly List<FrameworkSystem> m_initializedSystems = new List<FrameworkSystem>(); // 含初始化中的系统。
 
         private readonly GameCodePreparationResult m_codePreparationResult =
             new GameCodePreparationResult(); // 代码和入口共享结果。

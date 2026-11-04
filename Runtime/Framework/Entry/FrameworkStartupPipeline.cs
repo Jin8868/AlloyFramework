@@ -14,10 +14,10 @@ namespace AlloyFramework
     {
         private readonly List<IFrameworkStartupStep> m_steps = new List<IFrameworkStartupStep>(); // 固定启动顺序。
         private readonly FrameworkStartupContext m_context; // 本轮生命周期和服务状态。
-        private int m_stepCount; // 框架 Loading 的真实步骤总数。
+        private int m_startedStepCount; // 已开始且仍需逆序清理的步骤数。
+        private bool m_shutdownImmediately; // 同步退出后停止异步清理续体。
+        private UniTaskCompletionSource m_shutdownCompleted; // 重复退出共享同一个清理结果。
         private bool m_hasRun; // 防止重复初始化同一批系统。
-
-        internal int StepCount => m_stepCount;
 
         internal FrameworkStartupPipeline(FrameworkStartupContext context)
         {
@@ -26,7 +26,7 @@ namespace AlloyFramework
             // 配置先于资源初始化；各步骤自行创建所需的配置实现。
             Add(new ConfigureGameStartupStep());
 
-            // 列表就是框架系统的初始化顺序，退出时逆序关闭成功初始化的系统。
+            // 列表就是框架系统的初始化顺序，退出时逆序清理已经开始的步骤。
             Add(new InitializeFrameworkSystemStep(new GameLoopManager()));
             Add(new InitializeFrameworkSystemStep(new TimerManager()));
             Add(new InitializeFrameworkSystemStep(new ResourceServiceManager()));
@@ -39,7 +39,6 @@ namespace AlloyFramework
             Add(new InitializeFrameworkSystemStep(new NetworkManager()));
             Add(new InitializeFrameworkSystemStep(new UIManager()));
             Add(new CompleteFrameworkInitializationStep());
-            Add(new LoadGameEntryStep());
             Add(new InitializeGameStartupStep());
             Add(new StartGameEntryStep());
         }
@@ -52,11 +51,15 @@ namespace AlloyFramework
             }
 
             m_hasRun = true;
-            foreach (var step in m_steps)
+            for (int index = 0; index < m_steps.Count; index++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                var step = m_steps[index];
+                string stepName = step.GetType().Name;
+                // 执行前取得清理责任，失败的当前步骤同样参与回滚。
+                m_startedStepCount = index + 1;
                 var startedAt = FrameworkStartupLog.Now;
-                FrameworkStartupLog.Info($"开始：{step.Name}");
+                FrameworkStartupLog.Info($"开始：{stepName}");
                 try
                 {
                     await step.ExecuteAsync(m_context, cancellationToken);
@@ -64,117 +67,111 @@ namespace AlloyFramework
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
-                    // 正常退出只传播取消，让 Bootstrap 完成关闭，不记录步骤失败。
+                    // 正常退出只传播取消，让控制器完成关闭，不记录步骤失败。
                     throw;
                 }
                 catch
                 {
-                    FrameworkStartupLog.Failure(step.Name, startedAt);
+                    FrameworkStartupLog.Failure(stepName, startedAt);
                     throw;
                 }
 
-                FrameworkStartupLog.Step(step.Name, startedAt);
+                FrameworkStartupLog.Step(stepName, startedAt);
             }
         }
 
-        internal async UniTask ShutdownAsync()
+        internal UniTask ShutdownAsync()
         {
-            // 先结束启动展示；失败会话释放后仍保留独立的 AOT 错误面板。
-            var loadingSession = m_context.LoadingSession;
-            m_context.LoadingSession = null;
-            loadingSession?.Dispose();
+            if (m_shutdownCompleted != null) return m_shutdownCompleted.Task;
+            if (m_shutdownImmediately) return UniTask.CompletedTask;
 
-            // 场景和界面先结束使用业务功能，再逆序释放初始化器和框架系统。
-            if (m_context.IsGameEntryStarted)
+            // 先发布共享任务，避免清理回调重入后重复释放步骤。
+            m_shutdownCompleted = new UniTaskCompletionSource();
+            RunShutdownAsync(m_shutdownCompleted).Forget();
+            return m_shutdownCompleted.Task;
+        }
+
+        private async UniTask RunShutdownAsync(UniTaskCompletionSource completion)
+        {
+            try
             {
-                m_context.IsGameEntryStarted = false;
-                try
+                while (m_startedStepCount > 0 && !m_shutdownImmediately)
                 {
-                    await m_context.GameEntry.ShutdownAsync();
+                    m_startedStepCount--;
+                    var step = m_steps[m_startedStepCount];
+                    try
+                    {
+                        await step.ShutdownAsync(m_context);
+                    }
+                    catch (Exception exception)
+                    {
+                        // 单一步骤清理失败不能阻断其余依赖的逆序释放。
+                        AlloyDebug.Error(exception);
+                    }
                 }
-                catch (Exception exception)
-                {
-                    AlloyDebug.Error(exception);
-                }
+                ClearContext();
+                completion.TrySetResult();
             }
-
-            if (m_context.IsGameStartupStarted)
+            catch (Exception exception)
             {
-                m_context.IsGameStartupStarted = false;
-                try
-                {
-                    await m_context.GameStartup.ShutdownAsync();
-                }
-                catch (Exception exception)
-                {
-                    AlloyDebug.Error(exception);
-                }
+                completion.TrySetException(exception);
             }
-
-            await ShutdownSystemsAsync();
         }
 
         internal void ShutdownImmediately()
         {
-            // 进程退出不能等待异步业务任务，由框架系统执行同步兜底清理。
+            if (m_shutdownImmediately) return;
+            m_shutdownImmediately = true;
+            m_startedStepCount = 0;
+
+            // 应用退出不能等待业务异步清理，保留系统的同步释放作为兜底。
+            try
+            {
+                for (int index = m_context.InitializedSystems.Count - 1; index >= 0; index--)
+                {
+                    try
+                    {
+                        m_context.InitializedSystems[index].Shutdown();
+                    }
+                    catch (Exception exception)
+                    {
+                        AlloyDebug.Error(exception);
+                    }
+                }
+            }
+            finally
+            {
+                try
+                {
+                    ClearContext();
+                }
+                finally
+                {
+                    m_shutdownCompleted?.TrySetCanceled();
+                }
+            }
+        }
+
+        private void ClearContext()
+        {
+            // 最终释放只处理共享引用；资源清理由各步骤完成，同步退出也会经过这里。
             var loadingSession = m_context.LoadingSession;
             m_context.LoadingSession = null;
-            loadingSession?.Dispose();
+            m_context.InitializedSystems.Clear();
+            m_context.Services.Clear();
+            m_context.GameStartup = null;
+            m_context.GameEntry = null;
+            m_context.Configuration = null;
             m_context.IsGameEntryStarted = false;
             m_context.IsGameStartupStarted = false;
-            ShutdownSystems();
-        }
-
-        private async UniTask ShutdownSystemsAsync()
-        {
-            // 逐个等待系统释放，确保音频任务退出后资源服务才会关闭；单个失败不阻断后续清理。
-            for (int index = m_context.InitializedSystems.Count - 1; index >= 0; index--)
-            {
-                try
-                {
-                    await m_context.InitializedSystems[index].ShutdownAsync();
-                }
-                catch (Exception exception)
-                {
-                    AlloyDebug.Error(exception);
-                }
-            }
-
-            m_context.InitializedSystems.Clear();
-            m_context.Services.Clear();
-            m_context.GameStartup = null;
-            m_context.GameEntry = null;
             m_context.IsGameStartupCompleted = false;
             m_context.IsInitialized = false;
-        }
-
-        private void ShutdownSystems()
-        {
-            // 单个系统释放失败不能阻断后续系统清理。
-            for (int index = m_context.InitializedSystems.Count - 1; index >= 0; index--)
-            {
-                try
-                {
-                    m_context.InitializedSystems[index].Shutdown();
-                }
-                catch (Exception exception)
-                {
-                    AlloyDebug.Error(exception);
-                }
-            }
-
-            m_context.InitializedSystems.Clear();
-            m_context.Services.Clear();
-            m_context.GameStartup = null;
-            m_context.GameEntry = null;
-            m_context.IsGameStartupCompleted = false;
-            m_context.IsInitialized = false;
+            loadingSession?.Dispose();
         }
 
         private void Add(IFrameworkStartupStep step)
         {
             m_steps.Add(step);
-            m_stepCount += step.StepCount;
         }
     }
 }

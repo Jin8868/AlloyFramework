@@ -8,12 +8,6 @@ namespace AlloyFramework
     /// <summary>在全部框架系统就绪后反射创建并执行业务初始化器。</summary>
     internal sealed class InitializeGameStartupStep : IFrameworkStartupStep
     {
-        /// <summary>当前启动步骤的日志名称。</summary>
-        public string Name => "初始化业务功能";
-
-        /// <summary>业务使用独立进度，不再累计框架 Loading 步骤。</summary>
-        public int StepCount => 0;
-
         /// <summary>交接同一份 Loading 并等待业务初始化全部完成。</summary>
         /// <param name="context">本轮启动上下文。</param>
         /// <param name="cancellationToken">用于取消业务初始化的令牌。</param>
@@ -23,9 +17,10 @@ namespace AlloyFramework
         public async UniTask ExecuteAsync(FrameworkStartupContext context, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (!context.IsInitialized || context.GameEntry == null || context.LoadingSession != null)
+            if (!context.IsInitialized || context.IsGameStartupStarted ||
+                context.IsGameStartupCompleted || context.LoadingSession != null)
             {
-                throw new InvalidOperationException("业务初始化需要框架系统和入口就绪，且不能重复执行。");
+                throw new InvalidOperationException("业务初始化需要框架系统就绪，且不能重复执行。");
             }
 
             // 业务初始化器在此时才创建，准备代码时不再提前注册或执行。
@@ -83,6 +78,32 @@ namespace AlloyFramework
 
             // 无初始化器的项目可直接进入游戏；允许业务程序集中的内部无参构造函数。
             return startupType == null ? null : (IGameStartup)Activator.CreateInstance(startupType, true);
+        }
+
+        /// <summary>释放本步骤持有的状态和资源，可处理执行中途失败的情况。</summary>
+        /// <param name="context">本轮启动上下文。</param>
+        /// <returns>本步骤退出清理完成的任务。</returns>
+        public async UniTask ShutdownAsync(FrameworkStartupContext context)
+        {
+            var gameStartup = context.GameStartup;
+            bool shouldShutdown = context.IsGameStartupStarted;
+            context.IsGameStartupStarted = false;
+            context.IsGameStartupCompleted = false;
+            try
+            {
+                if (shouldShutdown && gameStartup != null)
+                {
+                    await gameStartup.ShutdownAsync();
+                }
+            }
+            finally
+            {
+                // 初始化器或业务入口失败后，仍释放本步骤交接的展示会话。
+                context.GameStartup = null;
+                var loadingSession = context.LoadingSession;
+                context.LoadingSession = null;
+                loadingSession?.Dispose();
+            }
         }
     }
 }
