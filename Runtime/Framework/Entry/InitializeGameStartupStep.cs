@@ -39,18 +39,18 @@ namespace AlloyFramework
 
             // 业务类型加载后才能确定总数；初始化和入口共用一次 Loading 接管。
             int startupStepCount = context.GameStartup?.StepCount ?? 0;
-            int entryStepCount = context.GameEntry.StepCount;
-            if (startupStepCount < 0 || entryStepCount < 0)
+            if (startupStepCount < 0)
             {
                 throw new InvalidOperationException("业务声明的 Loading 步骤数不能为负数。");
             }
 
-            int stepCount = checked(startupStepCount + entryStepCount);
+            // 整个游戏入口固定占一步，不由业务声明其内部任务数量。
+            int stepCount = checked(startupStepCount + 1);
 
             // 完成状态至少展示一帧，再由业务初始化和入口共享后续进度。
             StartupLoading.HandOver();
             await UniTask.NextFrame(cancellationToken);
-            context.LoadingSession = StartupLoading.TakeOver(Math.Max(1, stepCount));
+            context.LoadingSession = StartupLoading.TakeOver(stepCount);
             AlloyDebug.Log("[GameStartup] 业务已接管统一 Loading。");
             if (context.GameStartup != null)
             {

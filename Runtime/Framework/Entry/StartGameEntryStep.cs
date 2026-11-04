@@ -21,14 +21,22 @@ namespace AlloyFramework
         public async UniTask ExecuteAsync(FrameworkStartupContext context, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (!context.IsGameStartupCompleted || context.GameEntry == null || context.IsGameEntryStarted)
+            if (!context.IsGameStartupCompleted || context.GameEntry == null ||
+                context.LoadingSession == null || context.IsGameEntryStarted)
             {
                 throw new InvalidOperationException("业务入口需要初始化完成且不能重复执行。");
             }
 
             // 调用前取得清理责任，入口中途失败时也会执行退出方法。
             context.IsGameEntryStarted = true;
-            await context.GameEntry.MainAsync(context.LoadingSession, cancellationToken);
+            // 整个入口固定作为一步，业务返回且未取消后才完成并关闭共享展示。
+            var loadingSession = context.LoadingSession;
+            loadingSession.BeginStep(EStartupLoadingStage.LoadingScene, "进入游戏");
+            await context.GameEntry.MainAsync(loadingSession, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            loadingSession.CompleteStep();
+            loadingSession.Dispose();
+            context.LoadingSession = null;
         }
     }
 }
