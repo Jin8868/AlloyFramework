@@ -107,7 +107,7 @@ namespace AlloyFramework
         /// <param name="progress">零到一之间的步骤进度。</param>
         void Report(float progress);
 
-        /// <summary>完成当前步骤并累计其权重。</summary>
+        /// <summary>标记当前操作完成，下一操作重新报告自己的进度。</summary>
         void CompleteStep();
 
         /// <summary>冻结进度并显示当前步骤错误。</summary>
@@ -118,7 +118,7 @@ namespace AlloyFramework
         void Close();
     }
 
-    /// <summary>集中管理启动快照、步骤权重、控制权与唯一错误。</summary>
+    /// <summary>集中管理当前操作进度、展示控制权与唯一错误。</summary>
     public static class StartupLoading
     {
         private const float READINESSTIMEOUT = 15f; // 展示缺失时给出诊断，避免无限等待。
@@ -128,8 +128,6 @@ namespace AlloyFramework
         private static StartupLoadingSnapshot m_snapshot; // 注册时立即重放的最新状态。
         private static StartupLoadingError m_error; // 本轮去重后的唯一错误。
         private static int m_round; // 单调增长，隔离旧异步回调。
-        private static int m_stepCount; // 业务初始化声明的步骤总数，不用于框架阶段。
-        private static int m_completedSteps; // 已完成的业务步骤数。
         private static bool m_stepActive; // 当前是否有尚未完成的步骤。
         private static bool m_businessReady; // 框架已明确交出控制权。
         private static string m_stepName; // 当前逻辑步骤名称。
@@ -160,24 +158,19 @@ namespace AlloyFramework
         }
 
         /// <summary>取得本轮业务控制权并显式重置为零进度。</summary>
-        /// <param name="stepCount">业务真实步骤总数，各步骤使用相同权重。</param>
         /// <returns>仅对本轮有效的业务会话。</returns>
-        /// <exception cref="ArgumentOutOfRangeException">步骤总数不是正数。</exception>
         /// <exception cref="InvalidOperationException">框架尚未交接或已经接管。</exception>
-        public static IStartupLoadingSession TakeOver(int stepCount)
+        public static IStartupLoadingSession TakeOver()
         {
-            if (stepCount <= 0) throw new ArgumentOutOfRangeException(nameof(stepCount));
             if (!m_businessReady || !CanUpdate() || m_snapshot.Owner != EStartupLoadingOwner.Framework)
                 throw new InvalidOperationException("框架尚未交出启动 Loading 控制权，或业务已接管。");
-            m_stepCount = stepCount;
-            m_completedSteps = 0;
             m_stepActive = false;
             Publish(EStartupLoadingOwner.Business, EStartupLoadingStage.InitializingBusiness,
                 "准备业务启动", 0f, 0f);
             return new BusinessSession(m_round);
         }
 
-        /// <summary>更新真实资源子阶段，不改变逻辑步骤的累计权重。</summary>
+        /// <summary>更新当前资源或代码操作的状态与进度，不累计整体启动百分比。</summary>
         /// <param name="stage">资源或代码子阶段。</param>
         /// <param name="message">可信的阶段提示。</param>
         /// <param name="progress">当前逻辑步骤内的进度。</param>
@@ -191,7 +184,7 @@ namespace AlloyFramework
             if (!CanUpdate() || !m_stepActive ||
                 (m_snapshot.Owner == EStartupLoadingOwner.Framework && m_businessReady)) return;
             float fraction = Normalize(progress);
-            float overall = CalculateProgress(fraction);
+            float overall = fraction;
             Publish(m_snapshot.Owner, stage, message, fraction, overall, packageName, currentBytes, totalBytes);
         }
 
@@ -219,8 +212,6 @@ namespace AlloyFramework
             m_error = null;
             m_businessReady = false;
             m_stepActive = false;
-            m_stepCount = 0;
-            m_completedSteps = 0;
             m_cancellationToken = cancellationToken;
             Publish(EStartupLoadingOwner.Framework, EStartupLoadingStage.WaitingForLoading,
                 "准备启动", 0f, 0f);
@@ -293,9 +284,8 @@ namespace AlloyFramework
 
         private static void BeginStep(EStartupLoadingStage stage, string message)
         {
-            if (m_stepActive ||
-                (m_snapshot.Owner == EStartupLoadingOwner.Business && m_completedSteps >= m_stepCount))
-                throw new InvalidOperationException("启动步骤未完成或超出配置的步骤总数。");
+            if (m_stepActive)
+                throw new InvalidOperationException("上一个启动操作尚未完成。");
             m_stepName = message;
             m_stepStartedAt = Time.realtimeSinceStartupAsDouble;
             m_stepActive = true;
@@ -309,7 +299,6 @@ namespace AlloyFramework
             AlloyDebug.Log($"[StartupLoading] 完成：{m_stepName}，耗时 " +
                 $"{(Time.realtimeSinceStartupAsDouble - m_stepStartedAt) * 1000d:F1} ms");
             ReportOperation(m_snapshot.Stage, m_stepName, 1f);
-            if (m_snapshot.Owner == EStartupLoadingOwner.Business) m_completedSteps++;
             m_stepActive = false;
         }
 
@@ -317,14 +306,6 @@ namespace AlloyFramework
         {
             return m_snapshot != null && m_error == null && !m_cancellationToken.IsCancellationRequested &&
                 m_snapshot.Owner != EStartupLoadingOwner.Closed;
-        }
-
-        private static float CalculateProgress(float fraction)
-        {
-            // 框架只显示当前操作的真实进度，进入下一操作时允许从零开始。
-            if (m_snapshot.Owner == EStartupLoadingOwner.Framework) return fraction;
-            float progress = (m_completedSteps + fraction) / m_stepCount;
-            return Mathf.Max(m_snapshot.OverallProgress, progress);
         }
 
         private static float Normalize(float progress)
@@ -382,8 +363,6 @@ namespace AlloyFramework
             m_round++;
             m_businessReady = false;
             m_stepActive = false;
-            m_stepCount = 0;
-            m_completedSteps = 0;
             m_stepName = null;
             m_stepStartedAt = 0d;
             m_cancellationToken = default;
@@ -399,7 +378,7 @@ namespace AlloyFramework
             /// <summary>开始一个业务步骤。</summary>
             /// <param name="stage">业务阶段。</param>
             /// <param name="message">步骤提示。</param>
-            /// <exception cref="InvalidOperationException">上一业务步骤未完成或步骤总数已用尽。</exception>
+            /// <exception cref="InvalidOperationException">上一业务操作尚未完成。</exception>
             public void BeginStep(EStartupLoadingStage stage, string message)
             {
                 if (IsCurrent()) StartupLoading.BeginStep(stage, message);

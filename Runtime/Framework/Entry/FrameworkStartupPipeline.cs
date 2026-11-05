@@ -19,12 +19,14 @@ namespace AlloyFramework
         private UniTaskCompletionSource m_shutdownCompleted; // 重复退出共享同一个清理结果。
         private bool m_hasRun; // 防止重复初始化同一批系统。
 
-        internal FrameworkStartupPipeline(FrameworkStartupContext context)
+        internal FrameworkStartupPipeline(
+            FrameworkStartupContext context,
+            IGameStartupConfigurationProvider configurationProvider)
         {
             m_context = context ?? throw new ArgumentNullException(nameof(context));
 
             // 配置先于资源初始化；各步骤自行创建所需的配置实现。
-            Add(new ConfigureGameStartupStep());
+            Add(new ConfigureGameStartupStep(configurationProvider));
 
             // 列表就是框架系统的初始化顺序，退出时逆序清理已经开始的步骤。
             Add(new InitializeFrameworkSystemStep(new GameLoopManager()));
@@ -39,7 +41,6 @@ namespace AlloyFramework
             Add(new InitializeFrameworkSystemStep(new NetworkManager()));
             Add(new InitializeFrameworkSystemStep(new UIManager()));
             Add(new CompleteFrameworkInitializationStep());
-            Add(new InitializeGameStartupStep());
             Add(new StartGameEntryStep());
         }
 
@@ -127,11 +128,14 @@ namespace AlloyFramework
             // 应用退出不能等待业务异步清理，保留系统的同步释放作为兜底。
             try
             {
-                for (int index = m_context.InitializedSystems.Count - 1; index >= 0; index--)
+                for (int index = m_steps.Count - 1; index >= 0; index--)
                 {
                     try
                     {
-                        m_context.InitializedSystems[index].Shutdown();
+                        if (m_steps[index] is InitializeFrameworkSystemStep systemStep)
+                        {
+                            systemStep.ShutdownImmediately();
+                        }
                     }
                     catch (Exception exception)
                     {
@@ -155,18 +159,9 @@ namespace AlloyFramework
         private void ClearContext()
         {
             // 最终释放只处理共享引用；资源清理由各步骤完成，同步退出也会经过这里。
-            var loadingSession = m_context.LoadingSession;
-            m_context.LoadingSession = null;
-            m_context.InitializedSystems.Clear();
             m_context.Services.Clear();
-            m_context.GameStartup = null;
-            m_context.GameEntry = null;
             m_context.Configuration = null;
-            m_context.IsGameEntryStarted = false;
-            m_context.IsGameStartupStarted = false;
-            m_context.IsGameStartupCompleted = false;
             m_context.IsInitialized = false;
-            loadingSession?.Dispose();
         }
 
         private void Add(IFrameworkStartupStep step)

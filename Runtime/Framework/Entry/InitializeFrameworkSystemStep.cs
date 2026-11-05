@@ -8,6 +8,7 @@ namespace AlloyFramework
     internal sealed class InitializeFrameworkSystemStep : IFrameworkStartupStep
     {
         private readonly FrameworkSystem m_system; // 当前步骤负责初始化的系统。
+        private bool m_requiresShutdown; // 已取得系统清理责任，包含初始化中的状态。
 
         internal InitializeFrameworkSystemStep(FrameworkSystem system)
         {
@@ -25,7 +26,7 @@ namespace AlloyFramework
                 "初始化 " + m_system.GetType().Name);
             cancellationToken.ThrowIfCancellationRequested();
             // 调用前记录资源责任，初始化中途失败也由本步骤清理。
-            context.InitializedSystems.Add(m_system);
+            m_requiresShutdown = true;
             await m_system.InitializeAsync(context.Services, cancellationToken);
 
             // 只有初始化成功的系统才能进入服务容器。
@@ -39,7 +40,7 @@ namespace AlloyFramework
         /// <returns>本步骤退出清理完成的任务。</returns>
         public async UniTask ShutdownAsync(FrameworkStartupContext context)
         {
-            if (!context.InitializedSystems.Contains(m_system)) return;
+            if (!m_requiresShutdown) return;
 
             // 保留同步退出所需的记录，异步清理结束后再解除责任。
             try
@@ -48,8 +49,17 @@ namespace AlloyFramework
             }
             finally
             {
-                context.InitializedSystems.Remove(m_system);
+                m_requiresShutdown = false;
             }
+        }
+
+        internal void ShutdownImmediately()
+        {
+            if (!m_requiresShutdown) return;
+
+            // 应用退出时无法等待异步释放，先解除责任再执行同步兜底。
+            m_requiresShutdown = false;
+            m_system.Shutdown();
         }
     }
 }

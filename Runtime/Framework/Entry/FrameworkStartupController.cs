@@ -171,10 +171,7 @@ namespace AlloyFramework
             m_hasStarted = true;
             var startedAt = FrameworkStartupLog.Now;
             FrameworkStartupLog.Info("开始启动框架");
-            m_startupContext = new FrameworkStartupContext
-            {
-                ConfigurationProvider = configurationProvider
-            };
+            m_startupContext = new FrameworkStartupContext();
             m_startupContext.Services.StartupController = this;
             m_startupScreen = startupScreen;
             m_startupCancellation = new CancellationTokenSource();
@@ -183,10 +180,14 @@ namespace AlloyFramework
             m_isStarting = true;
             Application.quitting += HandleApplicationQuitting;
             UniTaskScheduler.UnobservedTaskException += HandleUnobservedTaskException;
-            RunStartupAsync(m_startupCancellation.Token, startedAt).Forget(HandleStartupException);
+            RunStartupAsync(m_startupCancellation.Token, startedAt, configurationProvider)
+                .Forget(HandleStartupException);
         }
 
-        private async UniTask RunStartupAsync(CancellationToken cancellationToken, double startedAt)
+        private async UniTask RunStartupAsync(
+            CancellationToken cancellationToken,
+            double startedAt,
+            IGameStartupConfigurationProvider configurationProvider)
         {
             var startupExited = m_startupExited;
             Exception startupException = null;
@@ -197,7 +198,7 @@ namespace AlloyFramework
                 await StartupLoading.BeginAsync(cancellationToken);
                 cancellationToken.ThrowIfCancellationRequested();
                 DestroyStartupScreen();
-                m_startupPipeline = new FrameworkStartupPipeline(m_startupContext);
+                m_startupPipeline = new FrameworkStartupPipeline(m_startupContext, configurationProvider);
                 await m_startupPipeline.RunAsync(cancellationToken);
                 cancellationToken.ThrowIfCancellationRequested();
                 FrameworkStartupLog.Step("完整启动（含业务入口）", startedAt);
