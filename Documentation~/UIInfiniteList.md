@@ -93,3 +93,6 @@ RebuildLayout、GetItemRect、CollectVisibleIndices 为布局扩展点。
 通过现有 UI 引用生成工具生成后，会得到 `UIInfiniteList` 类型的 `ListBag` 属性，
 对应私有字段为 `m_listBag`。节点必须挂有 `UIInfiniteList` 组件，否则生成器报告缺失组件。
 普通 `ScrollRect` 继续使用 `scroll_` 前缀。
+## 异形布局扩展
+
+不等尺寸、多模板和自定义路径布局使用 UIIrregularList，见 [异形列表说明](UIIrregularList.md)。

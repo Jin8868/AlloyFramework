@@ -20,7 +20,13 @@ namespace AlloyFramework.UI
         [SerializeField] private int m_maxInactiveItems = 32; // 空闲实例缓存上限。
 
         private readonly Dictionary<int, UIListItem> m_active = new Dictionary<int, UIListItem>(); // 索引映射。
-        private readonly Stack<UIListItem> m_pool = new Stack<UIListItem>(); // 当前模板的空闲实例。
+        // 按模板分别缓存，实例始终留在 Content 下。
+        private readonly Dictionary<UIListItem, Stack<UIListItem>> m_pool =
+            new Dictionary<UIListItem, Stack<UIListItem>>();
+        private readonly Dictionary<UIListItem, UIListItem> m_itemPrefabs =
+            new Dictionary<UIListItem, UIListItem>(); // 实例所属模板。
+        private int m_inactiveCount; // 合计空闲实例数。
+        private bool m_layoutRequested; // 回调中请求的延迟重建。
         private readonly List<int> m_indices = new List<int>(); // 本批次目标索引。
         private readonly HashSet<int> m_indexSet = new HashSet<int>(); // 回收阶段的可见性查询。
         private readonly List<int> m_removed = new List<int>(); // 延迟移除字典中的离开项。
@@ -81,6 +87,24 @@ namespace AlloyFramework.UI
         /// <summary>最近一次读取的数据数量。</summary>
         protected int ItemCount => m_count;
 
+        /// <summary>当前绑定的数据，仅供布局读取。</summary>
+        protected IList BoundData => m_data;
+
+        /// <summary>当前绑定的默认模板，供派生列表切换布局后重新绑定。</summary>
+        protected UIListItem BoundPrefab => m_prefab;
+
+        /// <summary>当前是否正在执行 Item 更新或清理，禁止布局切换重入。</summary>
+        protected bool IsUpdatingItems => m_updating;
+
+        /// <summary>本次布局重建原因。</summary>
+        protected EUIListUpdateReason LayoutUpdateReason { get; private set; }
+
+        /// <summary>滚动时是否更新已有项的姿态。</summary>
+        protected virtual bool LayoutChangesWithScroll => false;
+
+        /// <summary>重建时是否保持可见项相对位置。</summary>
+        protected virtual bool PreserveLayoutAnchor => false;
+
         /// <summary>当前布局使用的视口尺寸。</summary>
         protected Vector2 ViewportSize => m_viewportSize;
 
@@ -134,6 +158,8 @@ namespace AlloyFramework.UI
             {
                 RecycleAll();
                 if (m_prefab != prefab) DestroyPool();
+                OnDataCleared();
+                m_layoutRequested = false;
                 m_prefab = prefab;
                 m_data = items;
             }
@@ -182,12 +208,7 @@ namespace AlloyFramework.UI
             if (alignment < EUIListAlignment.Start || alignment > EUIListAlignment.End)
                 throw new ArgumentOutOfRangeException(nameof(alignment));
             EnsureCurrentLayout();
-            Rect rect = GetItemRect(index);
-            float start = vertical ? rect.y : rect.x;
-            float length = vertical ? rect.height : rect.width;
-            float factor = alignment == EUIListAlignment.Center ? 0.5f :
-                alignment == EUIListAlignment.End ? 1f : 0f;
-            ScrollToPos(start - (ViewportLength - length) * factor, animated, duration);
+            ScrollToPos(GetScrollPosition(index, alignment), animated, duration);
         }
 
         /// <summary>滚动到从顶部或左侧起算的本地 UI 距离，超出部分自动限制到边界。</summary>
@@ -229,6 +250,8 @@ namespace AlloyFramework.UI
             {
                 RecycleAll();
                 if (releasePool) DestroyPool();
+                OnDataCleared();
+                m_layoutRequested = false;
                 m_data = null;
                 m_count = 0;
                 m_failed = false;
@@ -292,6 +315,7 @@ namespace AlloyFramework.UI
             m_updating = true;
             RecycleAll();
             DestroyPool();
+            OnDataCleared();
             m_data = null;
             ItemsCreated = null;
             ItemsBound = null;
@@ -380,21 +404,86 @@ namespace AlloyFramework.UI
             for (int index = first; index <= last; index++) indices.Add(index);
         }
 
+        /// <summary>取得项的模板。</summary>
+        /// <param name="index">数据索引。</param>
+        /// <returns>实例化及分组缓存的模板。</returns>
+        protected virtual UIListItem GetItemPrefab(int index)
+        {
+            return m_prefab;
+        }
+
+        /// <summary>计算索引定位目标。</summary>
+        /// <param name="index">数据索引。</param>
+        /// <param name="alignment">对齐方式。</param>
+        /// <returns>逻辑滚动距离。</returns>
+        protected virtual float GetScrollPosition(int index, EUIListAlignment alignment)
+        {
+            Rect rect = GetItemRect(index);
+            float start = vertical ? rect.y : rect.x;
+            float length = vertical ? rect.height : rect.width;
+            float factor = alignment == EUIListAlignment.Center ? 0.5f :
+                alignment == EUIListAlignment.End ? 1f : 0f;
+            return start - (ViewportLength - length) * factor;
+        }
+
+        /// <summary>应用项布局，不负责数据展示。</summary>
+        /// <param name="item">显示实例。</param>
+        /// <param name="index">数据索引。</param>
+        protected virtual void ApplyItemLayout(UIListItem item, int index)
+        {
+            Rect rect = GetItemRect(index);
+            RectTransform itemTransform = item.RectTransform;
+            itemTransform.anchorMin = new Vector2(0f, 1f);
+            itemTransform.anchorMax = new Vector2(0f, 1f);
+            itemTransform.pivot = new Vector2(0f, 1f);
+            itemTransform.sizeDelta = rect.size;
+            itemTransform.anchoredPosition = new Vector2(rect.x, -rect.y);
+        }
+
+        /// <summary>请求下次自动更新重建布局，允许从 Item 回调调用。</summary>
+        protected void RequestLayoutRebuild()
+        {
+            m_layoutRequested = true;
+        }
+
+        /// <summary>验证实例是否仍属于当前绑定。</summary>
+        /// <param name="item">发起测量的实例。</param>
+        /// <param name="bindingVersion">测量开始时的版本。</param>
+        /// <returns>绑定是否仍有效。</returns>
+        protected bool IsCurrentItem(UIListItem item, uint bindingVersion)
+        {
+            return item != null && item.BindingVersion == bindingVersion && item.Index >= 0 &&
+                m_active.TryGetValue(item.Index, out UIListItem current) && current == item;
+        }
+
+        /// <summary>释放派生布局持有的数据与缓存。</summary>
+        protected virtual void OnDataCleared() { }
+
         private void BuildAndUpdate(EUIListUpdateReason reason, bool refresh, bool resetPosition)
         {
             EnsureNotUpdating();
             ValidateConfiguration();
             float previousPosition = resetPosition ? 0f : Position;
+            // 先用旧布局记录锚点，数据数量改变时沿用距离保持策略。
+            int anchorIndex = -1;
+            float anchorOffset = 0f;
+            if (!resetPosition && PreserveLayoutAnchor && m_count == m_data.Count)
+                CaptureScrollAnchor(out anchorIndex, out anchorOffset);
             m_count = m_data.Count;
             m_viewportSize = EffectiveViewport.rect.size;
+            LayoutUpdateReason = reason;
 
             // 统一左上角坐标，Content 只由虚拟列表控制尺寸和位置。
             content.anchorMin = new Vector2(0f, 1f);
             content.anchorMax = new Vector2(0f, 1f);
             content.pivot = new Vector2(0f, 1f);
             Vector2 size = RebuildLayout();
+            if (!IsFinite(size.x) || !IsFinite(size.y) || size.x < 0f || size.y < 0f)
+                throw new InvalidOperationException("布局内容尺寸必须为非负有限数。");
             content.sizeDelta = size;
             m_contentLength = vertical ? size.y : size.x;
+            if (anchorIndex >= 0 && anchorIndex < m_count)
+                previousPosition = GetScrollPosition(anchorIndex, EUIListAlignment.Start) + anchorOffset;
             SetPosition(Mathf.Clamp(previousPosition, 0f, MaximumPosition));
             m_pendingRebuild = false;
             m_failed = false;
@@ -404,10 +493,13 @@ namespace AlloyFramework.UI
 
         private void EnsureCurrentLayout()
         {
-            if (m_pendingRebuild || m_viewportSize != EffectiveViewport.rect.size || m_count != m_data.Count)
+            if (m_layoutRequested || m_pendingRebuild ||
+                m_viewportSize != EffectiveViewport.rect.size || m_count != m_data.Count)
             {
                 CancelScroll();
-                BuildAndUpdate(EUIListUpdateReason.Rebuild, true, false);
+                bool refresh = m_pendingRebuild || m_count != m_data.Count;
+                m_layoutRequested = false;
+                BuildAndUpdate(EUIListUpdateReason.Rebuild, refresh, false);
             }
         }
 
@@ -426,7 +518,23 @@ namespace AlloyFramework.UI
                     throw new InvalidOperationException("布局返回了越界或重复的数据索引。");
                 if (!changed && m_items[index].Index != dataIndex) changed = true;
             }
-            if (!changed && !refresh && !force) return;
+            if (!changed && !refresh && !force)
+            {
+                // 路径布局只更新姿态，不重复绑定或触发批次事件。
+                if (LayoutChangesWithScroll)
+                {
+                    m_updating = true;
+                    try
+                    {
+                        foreach (UIListItem item in m_items) ApplyItemLayout(item, item.Index);
+                    }
+                    finally
+                    {
+                        m_updating = false;
+                    }
+                }
+                return;
+            }
 
             m_updating = true;
             try
@@ -434,7 +542,11 @@ namespace AlloyFramework.UI
                 // 先回收再补齐，快速跳转时也复用同一批实例。
                 m_removed.Clear();
                 foreach (var pair in m_active)
-                    if (!m_indexSet.Contains(pair.Key)) m_removed.Add(pair.Key);
+                {
+                    if (!m_indexSet.Contains(pair.Key) ||
+                        m_itemPrefabs[pair.Value] != GetItemPrefab(pair.Key))
+                        m_removed.Add(pair.Key);
+                }
                 foreach (int index in m_removed)
                 {
                     Recycle(m_active[index]);
@@ -447,7 +559,7 @@ namespace AlloyFramework.UI
                 {
                     if (!m_active.TryGetValue(index, out UIListItem item))
                     {
-                        item = RentItem(ref createdCount);
+                        item = RentItem(GetItemPrefab(index), ref createdCount);
                         m_active.Add(index, item);
                     }
                     m_items.Add(item);
@@ -459,13 +571,7 @@ namespace AlloyFramework.UI
                 {
                     UIListItem item = m_items[index];
                     int dataIndex = m_indices[index];
-                    Rect rect = GetItemRect(dataIndex);
-                    RectTransform itemTransform = item.RectTransform;
-                    itemTransform.anchorMin = new Vector2(0f, 1f);
-                    itemTransform.anchorMax = new Vector2(0f, 1f);
-                    itemTransform.pivot = new Vector2(0f, 1f);
-                    itemTransform.sizeDelta = rect.size;
-                    itemTransform.anchoredPosition = new Vector2(rect.x, -rect.y);
+                    ApplyItemLayout(item, dataIndex);
                     if (refresh || item.Index != dataIndex) item.BindItem(m_data[dataIndex], dataIndex);
                 }
 
@@ -494,13 +600,20 @@ namespace AlloyFramework.UI
             }
         }
 
-        private UIListItem RentItem(ref int createdCount)
+        private UIListItem RentItem(UIListItem prefab, ref int createdCount)
         {
             // 空闲实例始终留在 Content 下，复用时不再改变父节点。
-            if (m_pool.Count > 0) return m_pool.Pop();
+            if (prefab == null || prefab.transform.IsChildOf(content))
+                throw new InvalidOperationException("布局模板为空或位于 Content 内。");
+            if (m_pool.TryGetValue(prefab, out Stack<UIListItem> pool) && pool.Count > 0)
+            {
+                m_inactiveCount--;
+                return pool.Pop();
+            }
 
             // 新实例直接创建到 Content 下，隐藏后完成框架初始化与数据绑定。
-            UIListItem item = Instantiate(m_prefab, content, false);
+            UIListItem item = Instantiate(prefab, content, false);
+            m_itemPrefabs.Add(item, prefab);
             item.gameObject.SetActive(false);
             try
             {
@@ -527,7 +640,14 @@ namespace AlloyFramework.UI
                 Debug.LogException(exception, item);
             }
             item.gameObject.SetActive(false);
-            m_pool.Push(item);
+            UIListItem prefab = m_itemPrefabs[item];
+            if (!m_pool.TryGetValue(prefab, out Stack<UIListItem> pool))
+            {
+                pool = new Stack<UIListItem>();
+                m_pool.Add(prefab, pool);
+            }
+            pool.Push(item);
+            m_inactiveCount++;
         }
 
         private void RecycleAll()
@@ -539,12 +659,22 @@ namespace AlloyFramework.UI
 
         private void TrimPool()
         {
-            while (m_pool.Count > m_maxInactiveItems) DestroyItem(m_pool.Pop());
+            foreach (Stack<UIListItem> pool in m_pool.Values)
+            {
+                while (pool.Count > 0 && m_inactiveCount > m_maxInactiveItems)
+                {
+                    m_inactiveCount--;
+                    DestroyItem(pool.Pop());
+                }
+            }
         }
 
         private void DestroyPool()
         {
-            while (m_pool.Count > 0) DestroyItem(m_pool.Pop());
+            foreach (Stack<UIListItem> pool in m_pool.Values)
+                while (pool.Count > 0) DestroyItem(pool.Pop());
+            m_pool.Clear();
+            m_inactiveCount = 0;
         }
 
         private void DestroyItem(UIListItem item)
@@ -558,8 +688,26 @@ namespace AlloyFramework.UI
             {
                 Debug.LogException(exception, item);
             }
+            m_itemPrefabs.Remove(item);
             if (Application.isPlaying) Destroy(item.gameObject);
             else DestroyImmediate(item.gameObject);
+        }
+
+        private void CaptureScrollAnchor(out int anchorIndex, out float offset)
+        {
+            anchorIndex = -1;
+            offset = 0f;
+            float position = Position;
+            foreach (UIListItem item in m_items)
+            {
+                Rect rect = GetItemRect(item.Index);
+                float start = vertical ? rect.y : rect.x;
+                float end = vertical ? rect.yMax : rect.xMax;
+                if (end <= position || start >= position + ViewportLength) continue;
+                anchorIndex = item.Index;
+                offset = position - start;
+                return;
+            }
         }
 
         private void SetPosition(float position)

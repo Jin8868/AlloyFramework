@@ -33,6 +33,16 @@ namespace AlloyFramework.Editor
             EditorGUILayout.HelpBox(
                 "固定模板：配置默认预制体后调用 BindData(items)。动态模板：调用 Bind(prefab, items) 显式指定。",
                 MessageType.Info);
+            if (target is UIIrregularList)
+            {
+                EditorGUILayout.PropertyField(
+                    serializedObject.FindProperty("m_layoutBehaviour"), new GUIContent("布局行为"));
+                EditorGUILayout.PropertyField(
+                    serializedObject.FindProperty("m_templates"), new GUIContent("额外模板"), true);
+                EditorGUILayout.HelpBox(
+                    "布局行为挂在列表同一节点。编号 0 使用默认模板，其他正编号对应额外模板。",
+                    MessageType.Info);
+            }
             EditorGUILayout.PropertyField(serializedObject.FindProperty("m_itemSize"), new GUIContent("Item 尺寸"));
             EditorGUILayout.PropertyField(serializedObject.FindProperty("m_spacing"), new GUIContent("项间距"));
             EditorGUILayout.PropertyField(serializedObject.FindProperty("m_padding"), new GUIContent("内容边距"), true);

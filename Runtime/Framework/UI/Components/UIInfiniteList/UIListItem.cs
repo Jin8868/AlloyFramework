@@ -13,6 +13,9 @@ namespace AlloyFramework.UI
         /// <summary>当前绑定的数据，解绑后为空。</summary>
         public object Data { get; private set; }
 
+        /// <summary>绑定版本；异步任务开始时保存，用于拒绝复用后的旧结果。</summary>
+        public uint BindingVersion { get; private set; }
+
         /// <summary>当前数据索引，解绑后为负一。</summary>
         public int Index { get; private set; } = -1;
 
@@ -36,6 +39,7 @@ namespace AlloyFramework.UI
         internal void BindItem(object data, int index)
         {
             UnbindItem();
+            BindingVersion++;
             Data = data;
             Index = index;
             OnBind();
@@ -56,6 +60,7 @@ namespace AlloyFramework.UI
             }
             finally
             {
+                BindingVersion++;
                 Data = null;
                 Index = -1;
             }

@@ -11,6 +11,17 @@ namespace AlloyFramework.Editor
         [MenuItem("GameObject/★AlloyFramework★/UI/无限列表", false, 11)]
         private static void CreateList(MenuCommand menuCommand)
         {
+            CreateConfiguredList(menuCommand, false);
+        }
+
+        [MenuItem("GameObject/★AlloyFramework★/UI/异形无限列表", false, 12)]
+        private static void CreateIrregularList(MenuCommand menuCommand)
+        {
+            CreateConfiguredList(menuCommand, true);
+        }
+
+        private static void CreateConfiguredList(MenuCommand menuCommand, bool irregular)
+        {
             // 将新增 Canvas 和列表合并到一次撤销操作中。
             Undo.IncrementCurrentGroup();
             int undoGroup = Undo.GetCurrentGroup();
@@ -30,7 +41,9 @@ namespace AlloyFramework.Editor
             }
 
             // 根节点保留射线目标，使空白区域也能接收拖拽和滚轮。
-            var root = new GameObject("list_New", typeof(RectTransform), typeof(Image), typeof(UIInfiniteList));
+            System.Type listType = irregular ? typeof(UIIrregularList) : typeof(UIInfiniteList);
+            string nodeName = irregular ? "rlist_New" : "list_New";
+            var root = new GameObject(nodeName, typeof(RectTransform), typeof(Image), listType);
             GameObjectUtility.SetParentAndAlign(root, parent);
             GameObjectUtility.EnsureUniqueNameForSibling(root);
             var rootRect = (RectTransform)root.transform;
@@ -56,6 +69,13 @@ namespace AlloyFramework.Editor
             list.vertical = true;
             list.ItemSize = new Vector2(400f, 100f);
             list.movementType = ScrollRect.MovementType.Clamped;
+            if (irregular)
+            {
+                var layout = root.AddComponent<UISequentialListLayout>();
+                var serializedList = new SerializedObject(list);
+                serializedList.FindProperty("m_layoutBehaviour").objectReferenceValue = layout;
+                serializedList.ApplyModifiedPropertiesWithoutUndo();
+            }
             Undo.RegisterCreatedObjectUndo(root, "创建无限列表");
             Undo.CollapseUndoOperations(undoGroup);
             Selection.activeGameObject = root;

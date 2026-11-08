@@ -41,6 +41,7 @@ namespace AlloyFramework.Editor
             rules.Add(new UIBindingRule("slider_", typeof(Slider)));
             rules.Add(new UIBindingRule("scroll_", typeof(ScrollRect)));
             rules.Add(new UIBindingRule("list_", typeof(UIInfiniteList)));
+            rules.Add(new UIBindingRule("rlist_", typeof(UIIrregularList)));
             rules.Add(new UIBindingRule("go_", typeof(GameObject)));
             rules.Add(new UIBindingRule("tf_", typeof(Transform)));
             rules.Add(new UIBindingRule("rt_", typeof(RectTransform)));
