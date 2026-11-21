@@ -114,7 +114,8 @@ namespace AlloyFramework.Editor
                     BuildController(
                         request.Settings.ScriptNamespace,
                         request.ViewName,
-                        request.ControllerName));
+                        request.ControllerName,
+                        request.Settings.DataTypeName));
             }
 
             WriteDefinitions(requests);
@@ -268,11 +269,7 @@ namespace AlloyFramework.Editor
             }
 
             ValidateIdentifier(settings.UIName, "UI 名称");
-            var namespaceSegments = settings.ScriptNamespace.Split('.');
-            for (var index = 0; index < namespaceSegments.Length; index++)
-            {
-                ValidateIdentifier(namespaceSegments[index], "命名空间");
-            }
+            ValidateQualifiedName(settings.ScriptNamespace, "命名空间");
 
             var viewFolder = ValidateFolder(settings.ViewFolder, "View 文件夹");
             var controllerFolder = ValidateFolder(settings.ControllerFolder, "Controller 文件夹");
@@ -309,6 +306,11 @@ namespace AlloyFramework.Editor
                     !settings.HasGenerated && !pendingPrefabGuids.Contains(settings.PrefabGuid))
                 {
                     continue;
+                }
+
+                if (!string.IsNullOrWhiteSpace(settings.DataTypeName))
+                {
+                    ValidateQualifiedName(settings.DataTypeName, $"UI {settings.UIName} 的打开参数类型");
                 }
 
                 if (!string.Equals(settings.ScriptNamespace, scriptNamespace, StringComparison.Ordinal))
@@ -469,6 +471,15 @@ namespace AlloyFramework.Editor
             return "Assets" + full.Substring(Application.dataPath.Length).Replace('\\', '/');
         }
 
+        private static void ValidateQualifiedName(string value, string label)
+        {
+            var segments = value.Split('.');
+            for (var index = 0; index < segments.Length; index++)
+            {
+                ValidateIdentifier(segments[index], label);
+            }
+        }
+
         private static void ValidateIdentifier(string value, string label)
         {
             if (string.IsNullOrEmpty(value) || Keywords.Contains(value) ||
@@ -503,9 +514,15 @@ namespace AlloyFramework.Editor
                 File.WriteAllText(path, content, new UTF8Encoding(false));
         }
 
-        private static string BuildController(string scriptNamespace, string viewName,
-            string controllerName)
+        private static string BuildController(
+            string scriptNamespace,
+            string viewName,
+            string controllerName,
+            string dataTypeName)
         {
+            var hasData = !string.IsNullOrWhiteSpace(dataTypeName);
+            var controllerArguments = hasData ? $"{viewName}, {dataTypeName}" : viewName;
+            var dataType = hasData ? dataTypeName : nameof(UIEmptyData);
             var source = new StringBuilder();
             source.AppendLine("using System.Threading;");
             source.AppendLine("using AlloyFramework.UI;");
@@ -513,7 +530,7 @@ namespace AlloyFramework.Editor
             source.AppendLine();
             source.AppendLine($"namespace {scriptNamespace}");
             source.AppendLine("{");
-            source.AppendLine($"    public sealed class {controllerName} : UIController<{viewName}>");
+            source.AppendLine($"    public sealed class {controllerName} : UIController<{controllerArguments}>");
             source.AppendLine("    {");
             source.AppendLine("        // Controller 和 View 首次创建后调用一次。");
             source.AppendLine("        protected override void OnCreate()");
@@ -522,18 +539,18 @@ namespace AlloyFramework.Editor
             source.AppendLine();
             source.AppendLine("        // 每次打开前调用，可以异步准备数据和资源。");
             source.AppendLine("        protected override UniTask OnPrepareAsync(");
-            source.AppendLine("            UIEmptyData data, CancellationToken cancellationToken)");
+            source.AppendLine($"            {dataType} data, CancellationToken cancellationToken)");
             source.AppendLine("        {");
             source.AppendLine("            return UniTask.CompletedTask;");
             source.AppendLine("        }");
             source.AppendLine();
             source.AppendLine("        // 每次打开时初始化界面数据。");
-            source.AppendLine("        protected override void OnInitData(UIEmptyData data)");
+            source.AppendLine($"        protected override void OnInitData({dataType} data)");
             source.AppendLine("        {");
             source.AppendLine("        }");
             source.AppendLine();
             source.AppendLine("        // 已打开的界面以刷新模式再次打开时调用。");
-            source.AppendLine("        protected override void OnRefresh(UIEmptyData data)");
+            source.AppendLine($"        protected override void OnRefresh({dataType} data)");
             source.AppendLine("        {");
             source.AppendLine("        }");
             source.AppendLine();
@@ -742,15 +759,16 @@ namespace AlloyFramework.Editor
             {
                 var entry = entries[index];
                 var settings = entry.Settings;
+                var arguments = GetDefinitionArguments(entry);
                 source.AppendLine();
                 source.AppendLine("        /// <summary>");
                 source.AppendLine($"        /// {settings.UIName} 的静态界面定义。");
                 source.AppendLine("        /// </summary>");
                 source.AppendLine(
-                    $"        public static UIDefinition<{entry.ViewName}, {entry.ControllerName}> " +
+                    $"        public static UIDefinition<{arguments}> " +
                     $"{settings.UIName} =>");
                 source.AppendLine(
-                    $"            (UIDefinition<{entry.ViewName}, {entry.ControllerName}>)" +
+                    $"            (UIDefinition<{arguments}>)" +
                     $"m_definitions[\"{settings.UIName}\"];");
             }
         }
@@ -793,11 +811,12 @@ namespace AlloyFramework.Editor
             DefinitionEntry entry)
         {
             var settings = entry.Settings;
+            var arguments = GetDefinitionArguments(entry);
             source.AppendLine($"            // 注册 {settings.UIName} 的静态界面定义。");
             source.AppendLine("            definitions.Add(");
             source.AppendLine($"                \"{settings.UIName}\",");
             source.AppendLine(
-                $"                new UIDefinitionBuilder<{entry.ViewName}, {entry.ControllerName}>(" +
+                $"                new UIDefinitionBuilder<{arguments}>(" +
                 $"\"{settings.UIName}\")");
             source.AppendLine($"                    .Location(\"{Escape(entry.Location)}\")");
             source.AppendLine($"                    .Layer(UILayer.{settings.Layer})");
@@ -811,6 +830,13 @@ namespace AlloyFramework.Editor
                 $"                    .PauseCovered({(settings.PauseCovered ? "true" : "false")})");
             source.AppendLine("                    .Build());");
             source.AppendLine();
+        }
+
+        private static string GetDefinitionArguments(DefinitionEntry entry)
+        {
+            var arguments = $"{entry.ViewName}, {entry.ControllerName}";
+            var dataTypeName = entry.Settings.DataTypeName;
+            return string.IsNullOrWhiteSpace(dataTypeName) ? arguments : $"{arguments}, {dataTypeName}";
         }
 
         private static string Escape(string value) =>

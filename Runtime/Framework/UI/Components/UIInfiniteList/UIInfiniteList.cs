@@ -14,6 +14,11 @@ namespace AlloyFramework.UI
     {
         [SerializeField] private UIListItem m_defaultPrefab; // Inspector 配置的默认模板，显式绑定可覆盖。
         [SerializeField] private Vector2 m_itemSize = new Vector2(100f, 100f); // 每项占据的固定尺寸。
+        [SerializeField, Min(1)] private int m_crossAxisCount = 1; // 每行的列数或每列的行数。
+        [SerializeField, Min(0)] private int m_visibleLineCount; // 按视口分配的行或列数，零保留主轴项尺寸。
+        [SerializeField, Min(0f)] private float m_crossAxisSpacing; // 同一行或列内的项间距。
+        [SerializeField] private bool m_fitCrossAxis; // 是否按视口均分交叉轴空间。
+        private Vector2 m_cellSize; // 最近一次布局计算出的实际项尺寸。
         [SerializeField] private float m_spacing; // 主轴项间距。
         [SerializeField] private RectOffset m_padding = new RectOffset(); // 内容边距。
         [SerializeField] private float m_buffer = 100f; // 视口两端额外保留的距离。
@@ -73,6 +78,18 @@ namespace AlloyFramework.UI
 
         /// <summary>主轴项间距；设置后调用 Rebuild 应用。</summary>
         public float Spacing { get => m_spacing; set => m_spacing = value; }
+
+        /// <summary>每行列数（纵向）或每列行数（横向），修改后调用 Rebuild。</summary>
+        public int CrossAxisCount { get => m_crossAxisCount; set => m_crossAxisCount = value; }
+
+        /// <summary>视口主轴可容纳的行或列数，零表示使用 ItemSize，修改后调用 Rebuild。</summary>
+        public int VisibleLineCount { get => m_visibleLineCount; set => m_visibleLineCount = value; }
+
+        /// <summary>交叉轴项间距，修改后调用 Rebuild。</summary>
+        public float CrossAxisSpacing { get => m_crossAxisSpacing; set => m_crossAxisSpacing = value; }
+
+        /// <summary>是否沿交叉轴均分视口，修改后调用 Rebuild。</summary>
+        public bool FitCrossAxis { get => m_fitCrossAxis; set => m_fitCrossAxis = value; }
 
         /// <summary>内容边距；修改后调用 Rebuild 应用。</summary>
         public RectOffset Padding => m_padding;
@@ -368,13 +385,30 @@ namespace AlloyFramework.UI
         /// <returns>完整内容的宽高。</returns>
         protected virtual Vector2 RebuildLayout()
         {
-            float length = m_count * (vertical ? m_itemSize.y : m_itemSize.x) +
-                Mathf.Max(0, m_count - 1) * m_spacing;
-            return vertical
-                ? new Vector2(Mathf.Max(m_viewportSize.x, m_itemSize.x + m_padding.horizontal),
-                    length + m_padding.vertical)
-                : new Vector2(length + m_padding.horizontal,
-                    Mathf.Max(m_viewportSize.y, m_itemSize.y + m_padding.vertical));
+            // 先扣除边距和间距，再分配每格尺寸。布局尚未展开时保留正尺寸。
+            int mainPadding = vertical ? m_padding.vertical : m_padding.horizontal;
+            int crossPadding = vertical ? m_padding.horizontal : m_padding.vertical;
+            float crossViewport = vertical ? m_viewportSize.x : m_viewportSize.y;
+            float mainSize = vertical ? m_itemSize.y : m_itemSize.x;
+            float crossSize = vertical ? m_itemSize.x : m_itemSize.y;
+            if (m_visibleLineCount > 0)
+                mainSize = GetSlotSize(ViewportLength - mainPadding, m_visibleLineCount, m_spacing);
+            if (m_fitCrossAxis)
+                crossSize = GetSlotSize(crossViewport - crossPadding, m_crossAxisCount, m_crossAxisSpacing);
+            m_cellSize = vertical ? new Vector2(crossSize, mainSize) : new Vector2(mainSize, crossSize);
+
+            // 末行仅计算一次主轴长度，缺少的格子不创建占位项。
+            int lines = m_count == 0 ? 0 : 1 + (m_count - 1) / m_crossAxisCount;
+            float length = mainPadding + lines * mainSize + Mathf.Max(0, lines - 1) * m_spacing;
+            int occupied = Mathf.Clamp(m_count, 1, m_crossAxisCount);
+            float breadth = crossPadding + occupied * crossSize + (occupied - 1) * m_crossAxisSpacing;
+            breadth = Mathf.Max(crossViewport, breadth);
+            return vertical ? new Vector2(breadth, length) : new Vector2(length, breadth);
+        }
+
+        private static float GetSlotSize(float available, int slots, float spacing)
+        {
+            return Mathf.Max(1f, (available - (slots - 1) * spacing) / slots);
         }
 
         /// <summary>取得从内容左上角起算、向右下为正的项矩形。</summary>
@@ -382,11 +416,11 @@ namespace AlloyFramework.UI
         /// <returns>项的逻辑矩形。</returns>
         protected virtual Rect GetItemRect(int index)
         {
-            return new Rect(
-                m_padding.left + (vertical ? 0f : index * (m_itemSize.x + m_spacing)),
-                m_padding.top + (vertical ? index * (m_itemSize.y + m_spacing) : 0f),
-                m_itemSize.x,
-                m_itemSize.y);
+            int line = index / m_crossAxisCount;
+            int slot = index % m_crossAxisCount;
+            float x = (vertical ? slot : line) * (m_cellSize.x + (vertical ? m_crossAxisSpacing : m_spacing));
+            float y = (vertical ? line : slot) * (m_cellSize.y + (vertical ? m_spacing : m_crossAxisSpacing));
+            return new Rect(m_padding.left + x, m_padding.top + y, m_cellSize.x, m_cellSize.y);
         }
 
         /// <summary>收集与主轴范围相交的索引，派生类可返回非连续索引。</summary>
@@ -396,12 +430,17 @@ namespace AlloyFramework.UI
         protected virtual void CollectVisibleIndices(float start, float end, List<int> indices)
         {
             if (m_count == 0) return;
-            float size = vertical ? m_itemSize.y : m_itemSize.x;
+            float size = vertical ? m_cellSize.y : m_cellSize.x;
             float padding = vertical ? m_padding.top : m_padding.left;
             float stride = size + m_spacing;
             int first = Mathf.Max(0, Mathf.CeilToInt((start - padding - size) / stride));
-            int last = Mathf.Min(m_count - 1, Mathf.FloorToInt((end - padding) / stride));
-            for (int index = first; index <= last; index++) indices.Add(index);
+            int last = Mathf.Min((m_count - 1) / m_crossAxisCount, Mathf.FloorToInt((end - padding) / stride));
+            if (first > last) return;
+
+            // 只访问可见行中的真实索引，并截断数据不足的一行。
+            int firstIndex = first * m_crossAxisCount;
+            int endIndex = (int)Math.Min(m_count, ((long)last + 1) * m_crossAxisCount);
+            for (int index = firstIndex; index < endIndex; index++) indices.Add(index);
         }
 
         /// <summary>取得项的模板。</summary>
@@ -744,6 +783,9 @@ namespace AlloyFramework.UI
                 m_padding == null || m_padding.left < 0 || m_padding.right < 0 ||
                 m_padding.top < 0 || m_padding.bottom < 0)
                 throw new InvalidOperationException("项尺寸必须为正，间距、边距、缓冲和缓存上限不能为负。");
+            if (m_crossAxisCount < 1 || m_visibleLineCount < 0 ||
+                !IsFinite(m_crossAxisSpacing) || m_crossAxisSpacing < 0f)
+                throw new InvalidOperationException("每行或每列至少有一项，可见行列数及交叉轴间距不能为负。");
             var layout = content.GetComponent<LayoutGroup>();
             var fitter = content.GetComponent<ContentSizeFitter>();
             if ((layout != null && layout.enabled) || (fitter != null && fitter.enabled))

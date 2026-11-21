@@ -1,7 +1,7 @@
 # 无限列表
 
 框架组件目录为 `Runtime/Framework/UI/Components/UIInfiniteList/`。
-首版支持横向或纵向固定尺寸单列虚拟化，不提供循环首尾、分页、多模板或异形布局。
+UIInfiniteList 支持横向或纵向滚动的单列和规则网格，使用同一套可见项复用与索引定位逻辑。
 
 ## 配置
 
@@ -12,6 +12,14 @@
 5. Item 预制体根节点挂业务 UIListItem 子类。模板使用预制体资源，不放在 Content 内。
 6. 列表、Content 和 Item 的布局根节点使用单位缩放、无旋转；装饰变换放在子节点。
 
+
+### 规则网格
+
+纵向滚动时，CrossAxisCount 控制列数，VisibleLineCount 控制视口行数；横向滚动时两者分别控制行数和视口列数。
+例如，纵向设置 CrossAxisCount = 3、VisibleLineCount = 4、FitCrossAxis = true，视口将排成四行三列。
+Spacing 控制滚动方向间距，CrossAxisSpacing 控制另一方向间距，两轴均分时会先扣除 Padding 和间距。
+VisibleLineCount 为 0 时保留 ItemSize 的主轴尺寸，FitCrossAxis 关闭时保留其交叉轴尺寸。
+默认每行或每列一项，超出视口的数据沿滚动方向连续排列，最后一行或一列按剩余数量显示。
 
 ## 创建菜单与模板选择
 

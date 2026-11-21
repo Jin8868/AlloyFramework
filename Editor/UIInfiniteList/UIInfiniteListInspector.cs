@@ -44,7 +44,19 @@ namespace AlloyFramework.Editor
                     MessageType.Info);
             }
             EditorGUILayout.PropertyField(serializedObject.FindProperty("m_itemSize"), new GUIContent("Item 尺寸"));
-            EditorGUILayout.PropertyField(serializedObject.FindProperty("m_spacing"), new GUIContent("项间距"));
+            EditorGUILayout.PropertyField(serializedObject.FindProperty("m_spacing"), new GUIContent("滚动方向间距"));
+            if (!(target is UIIrregularList))
+            {
+                // 交叉轴固定项数，主轴可选按视口均分或保留 Item 尺寸。
+                EditorGUILayout.PropertyField(serializedObject.FindProperty("m_crossAxisCount"),
+                    new GUIContent("每行列数 / 每列行数", "纵向滚动配置列数，横向滚动配置行数。"));
+                EditorGUILayout.PropertyField(serializedObject.FindProperty("m_crossAxisSpacing"),
+                    new GUIContent("交叉方向间距"));
+                EditorGUILayout.PropertyField(serializedObject.FindProperty("m_fitCrossAxis"),
+                    new GUIContent("交叉方向均分视口"));
+                EditorGUILayout.PropertyField(serializedObject.FindProperty("m_visibleLineCount"),
+                    new GUIContent("可见行数 / 列数", "按视口分配滚动方向的项尺寸，0 表示使用 Item 尺寸。"));
+            }
             EditorGUILayout.PropertyField(serializedObject.FindProperty("m_padding"), new GUIContent("内容边距"), true);
             EditorGUILayout.PropertyField(serializedObject.FindProperty("m_buffer"), new GUIContent("缓冲距离"));
             EditorGUILayout.PropertyField(

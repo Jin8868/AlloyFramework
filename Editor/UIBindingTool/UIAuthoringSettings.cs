@@ -15,6 +15,7 @@ namespace AlloyFramework.Editor
     {
         [SerializeField] private string m_prefabGuid;
         [SerializeField] private string m_uiName;
+        [SerializeField] private string m_dataTypeName; // 打开界面时传入的数据类型名称。
         [SerializeField] private string m_scriptNamespace = "Game.UI";
         [SerializeField] private string m_viewFolder = "Assets/Scripts/Runtime/UI/Views";
         [SerializeField] private string m_controllerFolder = "Assets/Scripts/Runtime/UI/Controllers";
@@ -32,6 +33,7 @@ namespace AlloyFramework.Editor
         public bool HasGenerated => m_hasGenerated;
         public string UIName { get => m_uiName; set => m_uiName = value; }
         public string ScriptNamespace { get => m_scriptNamespace; set => m_scriptNamespace = value; }
+        public string DataTypeName { get => m_dataTypeName; set => m_dataTypeName = value?.Trim(); }
         public string ViewFolder { get => m_viewFolder; set => m_viewFolder = value; }
         public string ControllerFolder { get => m_controllerFolder; set => m_controllerFolder = value; }
         public UILayer Layer { get => m_layer; set => m_layer = value; }

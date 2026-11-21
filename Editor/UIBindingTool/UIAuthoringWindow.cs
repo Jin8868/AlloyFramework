@@ -170,6 +170,12 @@ namespace AlloyFramework.Editor
                 EditorGUILayout.HelpBox("已有手写脚本：名称、命名空间和目录已锁定；展示策略仍可修改并重新生成。", MessageType.Info);
 
             EditorGUILayout.Space(8);
+            m_settings.DataTypeName = EditorGUILayout.TextField(
+                "打开参数类型", m_settings.DataTypeName ?? string.Empty);
+            EditorGUILayout.HelpBox(
+                "留空表示无需打开参数。已有 Controller 时，参数类型须与其泛型参数一致。",
+                MessageType.Info);
+            EditorGUILayout.Space(8);
             EditorGUILayout.LabelField("展示策略", EditorStyles.boldLabel);
             m_settings.Layer = (UILayer)EditorGUILayout.EnumPopup("层级", m_settings.Layer);
             m_settings.Layout = (UILayoutMode)EditorGUILayout.EnumPopup("布局", m_settings.Layout);
