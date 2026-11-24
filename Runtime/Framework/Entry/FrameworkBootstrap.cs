@@ -51,7 +51,7 @@ namespace AlloyFramework
                 InstallLogViewer();
                 m_settings.Validate();
                 InstallLoadingPresenter();
-                m_startupController.Startup(m_settings, m_startupScreen);
+                m_startupController.Startup(m_settings, m_startupScreen, m_logRoot.GetComponent<IStartupLogViewer>());
             }
             catch (Exception exception)
             {

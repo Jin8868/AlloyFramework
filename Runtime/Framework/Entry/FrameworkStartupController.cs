@@ -145,11 +145,12 @@ namespace AlloyFramework
         /// <summary>由场景入口显式启动本轮框架；每个控制器仅启动一次，重复请求不执行操作。</summary>
         /// <param name="configurationProvider">本轮启动使用的主包配置提供者。</param>
         /// <param name="startupScreen">展示层就绪后销毁的启动画面；可以为空。</param>
+        /// <param name="logViewer">本轮启动与 GM 共用的日志窗口。</param>
         /// <exception cref="ArgumentNullException">配置提供者为空。</exception>
         /// <exception cref="ObjectDisposedException">控制器已经释放。</exception>
         internal void Startup(
             IGameStartupConfigurationProvider configurationProvider,
-            GameObject startupScreen)
+            GameObject startupScreen, IStartupLogViewer logViewer)
         {
             if (m_isDisposed)
             {
@@ -171,7 +172,7 @@ namespace AlloyFramework
             m_hasStarted = true;
             var startedAt = FrameworkStartupLog.Now;
             FrameworkStartupLog.Info("开始启动框架");
-            m_startupContext = new FrameworkStartupContext();
+            m_startupContext = new FrameworkStartupContext { LogViewer = logViewer };
             m_startupContext.Services.StartupController = this;
             m_startupScreen = startupScreen;
             m_startupCancellation = new CancellationTokenSource();

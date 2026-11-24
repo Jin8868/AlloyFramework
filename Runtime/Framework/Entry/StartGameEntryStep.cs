@@ -1,6 +1,9 @@
 using System;
 using System.Threading;
+using AlloyFramework.GM;
+using AlloyFramework.UI;
 using Cysharp.Threading.Tasks;
+using UnityEngine;
 
 namespace AlloyFramework
 {
@@ -9,6 +12,7 @@ namespace AlloyFramework
     {
         private IGameEntry m_gameEntry; // 本步骤创建并负责退出的业务入口。
         private IStartupLoadingSession m_loadingSession; // 本步骤交接并负责释放的展示会话。
+        private GMUISession m_gmSession; // 本轮启用时负责打开和关闭 GM 界面。
         private bool m_hasExecuted; // 同一步骤实例只允许执行一次。
 
         /// <summary>创建唯一入口，等待业务初始化完成后进入游戏。</summary>
@@ -50,6 +54,9 @@ namespace AlloyFramework
             m_loadingSession.CompleteStep();
             m_loadingSession.Dispose();
             m_loadingSession = null;
+
+            // 业务首页就绪后再注册命令，避免在启动期间执行调试操作。
+            await TryStartGMAsync(context.LogViewer, cancellationToken);
         }
 
         /// <summary>退出已创建的入口，并确保失败或取消后释放展示会话。</summary>
@@ -61,6 +68,7 @@ namespace AlloyFramework
             m_gameEntry = null;
             try
             {
+                await TryStopGMAsync();
                 if (gameEntry != null) await gameEntry.ShutdownAsync();
             }
             finally
@@ -69,6 +77,53 @@ namespace AlloyFramework
                 var loadingSession = m_loadingSession;
                 m_loadingSession = null;
                 loadingSession?.Dispose();
+            }
+        }
+
+        private async UniTask TryStartGMAsync(IStartupLogViewer logViewer, CancellationToken cancellationToken)
+        {
+            try
+            {
+                if (!(m_gameEntry is IGMProvider provider) || !provider.IsGMEnabled)
+                {
+                    return;
+                }
+
+                // 只有业务明确启用后才扫描声明并通过框架打开 GM 入口。
+                var registry = new GMRegistry(logViewer);
+                provider.RegisterCommands(registry);
+                m_gmSession = new GMUISession(UIManager.Instance, registry.Seal());
+                await m_gmSession.ShowEntryAsync(cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                // 调试工具的初始化失败不影响已经就绪的业务。
+                await TryStopGMAsync();
+                Debug.LogException(exception);
+            }
+        }
+
+        private async UniTask TryStopGMAsync()
+        {
+            var session = m_gmSession;
+            m_gmSession = null;
+            if (session == null)
+            {
+                return;
+            }
+
+            try
+            {
+                await session.ShutdownAsync();
+            }
+            catch (Exception exception)
+            {
+                // GM 清理异常不阻止业务入口退出。
+                Debug.LogException(exception);
             }
         }
     }

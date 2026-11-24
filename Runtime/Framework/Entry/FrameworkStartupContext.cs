@@ -11,6 +11,7 @@ namespace AlloyFramework
         internal GameCodePreparationResult CodePreparationResult => m_codePreparationResult;
         internal FrameworkContext Services => m_services;
         internal GameStartupConfiguration Configuration { get; set; }
+        internal IStartupLogViewer LogViewer { get; set; }
         internal bool IsInitialized { get; set; }
     }
 }

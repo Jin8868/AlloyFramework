@@ -53,10 +53,6 @@ namespace AlloyFramework.Editor
             }
 
             RefreshPrefabs();
-            if (m_prefab != null && m_settings == null)
-            {
-                SelectPrefab(m_prefab);
-            }
             Repaint();
         }
 
@@ -121,9 +117,10 @@ namespace AlloyFramework.Editor
                 if (selected != isSelected)
                 {
                     SetPrefabSelected(item.Guid, selected);
+                    if (selected) SelectPrefab(item);
                 }
 
-                if (GUILayout.Button(item.Prefab.name, itemButton)) SelectPrefab(item.Prefab);
+                if (GUILayout.Button(item.Prefab.name, itemButton)) SelectPrefab(item);
                 EditorGUILayout.EndHorizontal();
                 GUI.backgroundColor = previousColor;
                 EditorGUILayout.LabelField(item.Path, EditorStyles.miniLabel);
@@ -143,12 +140,13 @@ namespace AlloyFramework.Editor
             EditorGUILayout.Space(8);
             DrawBatchGenerateAction();
             EditorGUILayout.LabelField("界面配置", EditorStyles.boldLabel);
-            var prefab = (GameObject)EditorGUILayout.ObjectField("UI 预制体", m_prefab,
-                typeof(GameObject), false);
-            if (prefab != m_prefab) SelectPrefab(prefab);
+            using (new EditorGUI.DisabledScope(true))
+            {
+                EditorGUILayout.ObjectField("UI 预制体", m_prefab, typeof(GameObject), false);
+            }
             if (m_settings == null)
             {
-                EditorGUILayout.HelpBox("从左侧搜索并选择业务 UI 预制体，或使用上方对象框。", MessageType.Info);
+                EditorGUILayout.HelpBox("请选择左侧的业务 UI 预制体。", MessageType.Info);
                 EditorGUILayout.EndScrollView();
                 EditorGUILayout.EndVertical();
                 return;
@@ -282,24 +280,15 @@ namespace AlloyFramework.Editor
             }
         }
 
-        private void SelectPrefab(GameObject prefab)
+        private void SelectPrefab(PrefabItem item)
         {
+            if (item.Prefab == m_prefab && m_settings != null) return;
             SaveSettings();
-            m_prefab = prefab;
-            m_settings = null;
-            if (prefab == null) return;
-            var path = AssetDatabase.GetAssetPath(prefab);
-            if (!path.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase) ||
-                !path.StartsWith("Assets/Res/Prefabs/UI/", StringComparison.Ordinal) ||
-                !PrefabUtility.IsPartOfPrefabAsset(prefab) || prefab.GetComponentInChildren<UIRoot>(true) != null)
-            {
-                m_prefab = null;
-                EditorUtility.DisplayDialog("选择 UI 预制体", "请选择 Assets/Res/Prefabs/UI 内的业务预制体，UIRoot 除外。", "确定");
-                return;
-            }
-            m_settings = UIAuthoringSettings.LoadOrCreate(path);
-            foreach (var item in m_prefabs)
-                if (item.Prefab == prefab) item.Settings = m_settings;
+
+            // 左侧条目已通过筛选，直接使用对应的资源和配置。
+            m_prefab = item.Prefab;
+            m_settings = item.Settings ?? UIAuthoringSettings.LoadOrCreate(item.Path);
+            item.Settings = m_settings;
         }
 
         private void RefreshPrefabs()
@@ -310,15 +299,39 @@ namespace AlloyFramework.Editor
             {
                 var path = AssetDatabase.GUIDToAssetPath(guid);
                 var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(path);
-                if (prefab == null || prefab.GetComponentInChildren<UIRoot>(true) != null) continue;
+                var settings = UIAuthoringSettings.TryLoad(guid);
+                if (!IsPageCandidate(prefab, settings)) continue;
                 m_prefabs.Add(new PrefabItem
                 {
                     Guid = guid, Path = path, Prefab = prefab,
-                    Settings = UIAuthoringSettings.TryLoad(guid)
+                    Settings = settings
                 });
             }
             m_prefabs.Sort((left, right) => string.Compare(left.Path, right.Path, StringComparison.Ordinal));
             RemoveMissingPrefabSelections();
+
+            // 刷新后重新关联配置，资源被移除时同步清空详情。
+            foreach (var item in m_prefabs)
+            {
+                if (item.Prefab != m_prefab) continue;
+                m_settings = item.Settings ?? UIAuthoringSettings.LoadOrCreate(item.Path);
+                item.Settings = m_settings;
+                return;
+            }
+
+            m_prefab = null;
+            m_settings = null;
+        }
+
+        private static bool IsPageCandidate(GameObject prefab, UIAuthoringSettings settings)
+        {
+            if (prefab == null || prefab.GetComponentInChildren<UIRoot>(true) != null ||
+                prefab.GetComponent<UIListItem>() != null)
+                return false;
+
+            // 兼容已配置的非标准名称，同时识别尚未挂载 View 的新界面。
+            return settings != null || prefab.GetComponent<UIView>() != null ||
+                prefab.name.EndsWith("UI", StringComparison.OrdinalIgnoreCase);
         }
 
         private bool MatchesSearch(PrefabItem item)
